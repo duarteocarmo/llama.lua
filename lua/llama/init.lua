@@ -35,11 +35,17 @@ local default_config = {
   ring_scope = 1024,
   ring_update_ms = 1000,
   -- debounce: delay FIM requests until user stops typing (ms)
+  -- ⭐ the only option not in llama.vim — set 0 to disable
   auto_fim_debounce_ms = 300,
-  keymap_fim_trigger = "<C-F>",
+  keymap_fim_trigger = "<leader>llf",
   keymap_fim_accept_full = "<Tab>",
   keymap_fim_accept_line = "<S-Tab>",
-  keymap_fim_accept_word = "<C-B>",
+  keymap_fim_accept_word = "<leader>ll]",
+  keymap_inst_trigger = "<leader>lli",
+  keymap_inst_rerun = "<leader>llr",
+  keymap_inst_continue = "<leader>llc",
+  keymap_inst_accept = "<Tab>",
+  keymap_inst_cancel = "<Esc>",
   keymap_debug_toggle = "<leader>lld",
   enable_at_startup = true,
 }
