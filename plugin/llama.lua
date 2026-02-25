@@ -1,0 +1,3 @@
+-- llama.lua plugin entry point
+-- The plugin is lazy-loaded via require("llama").setup()
+-- This file exists so that the plugin directory is recognized by Neovim's plugin loader.
