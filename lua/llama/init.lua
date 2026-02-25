@@ -147,8 +147,7 @@ local function setup_autocmds()
       vim.defer_fn(function()
         local cur = vim.fn.line(".")
         local half = math.floor(M.config.ring_chunk_size / 2)
-        local lines =
-          vim.fn.getline(math.max(1, cur - half), math.min(vim.fn.line("$"), cur + half))
+        local lines = vim.fn.getline(math.max(1, cur - half), math.min(vim.fn.line("$"), cur + half))
         ring.pick_chunk(lines, true, true, M.config)
       end, 100)
     end,
