@@ -80,25 +80,35 @@ local function buf_allowed()
 end
 
 local function on_move()
-  M.t_last_move = vim.loop.hrtime()
+  local t0 = vim.loop.hrtime()
+  M.t_last_move = t0
   fim.hide(M.config)
+  local t_hide = (vim.loop.hrtime() - t0) / 1e6
 
   if not buf_allowed() then
+    debug.log("on_move", string.format("hide=%.2fms (blocked by filetype)", t_hide))
     return
   end
+
+  debug.log("on_move", string.format("hide=%.2fms", t_hide))
 
   vim.schedule(function()
     local pos_x = vim.fn.col(".") - 1
     local pos_y = vim.fn.line(".")
+    local t1 = vim.loop.hrtime()
     fim.try_hint(pos_x, pos_y, M.config)
+    debug.log("on_move", string.format("try_hint=%.2fms", (vim.loop.hrtime() - t1) / 1e6))
   end)
 end
 
 local function on_cursor_moved_i()
-  M.t_last_move = vim.loop.hrtime()
+  local t0 = vim.loop.hrtime()
+  M.t_last_move = t0
   fim.hide(M.config)
+  local t_hide = (vim.loop.hrtime() - t0) / 1e6
 
   if not buf_allowed() then
+    debug.log("on_cursor_i", string.format("hide=%.2fms (blocked)", t_hide))
     return
   end
 
@@ -107,13 +117,20 @@ local function on_cursor_moved_i()
     M.debounce_timer = nil
   end
 
+  debug.log("on_cursor_i", string.format("hide=%.2fms", t_hide))
+
   M.debounce_timer = vim.fn.timer_start(M.config.auto_fim_debounce_ms, function()
     M.debounce_timer = nil
     vim.schedule(function()
       local pos_x = vim.fn.col(".") - 1
       local pos_y = vim.fn.line(".")
+      local t1 = vim.loop.hrtime()
       fim.try_hint(pos_x, pos_y, M.config)
+      local t_hint = (vim.loop.hrtime() - t1) / 1e6
+      local t2 = vim.loop.hrtime()
       fim.request(-1, -1, true, {}, true, M.config)
+      local t_req = (vim.loop.hrtime() - t2) / 1e6
+      debug.log("on_cursor_i", string.format("debounce: try_hint=%.2fms request=%.2fms", t_hint, t_req))
     end)
   end)
 end
