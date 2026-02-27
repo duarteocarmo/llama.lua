@@ -17,10 +17,13 @@ jobs:
 
       - name: install selene
         run: |
-          curl -L https://github.com/Kampfkarren/selene/releases/latest/download/selene-light-linux.zip -o selene.zip
+          VERSION=$(gh release view --repo Kampfkarren/selene --json tagName -q .tagName)
+          curl -L "https://github.com/Kampfkarren/selene/releases/download/${VERSION}/selene-light-${VERSION}-linux.zip" -o selene.zip
           unzip selene.zip
           chmod +x selene
           sudo mv selene /usr/local/bin/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: selene
         run: selene lua/
