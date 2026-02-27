@@ -167,6 +167,7 @@ function M.instruct(l0, l1, config)
   --- extract content from accumulated, handling fence detection
   local function extract_content()
     if fence_done then
+      debug.log("inst_extract", "fence_done, returning cached content (" .. #content .. " chars)")
       return content
     end
 
@@ -176,11 +177,14 @@ function M.instruct(l0, l1, config)
         inside_fence = true
         local after = accumulated:find("\n", fence_start) + 1
         content = accumulated:sub(after)
+        debug.log("inst_extract", "fence opened at pos " .. fence_start .. ", content so far: " .. #content .. " chars")
       else
         -- no fence yet — if we see a full line without fence markers, treat as raw
         if accumulated:find("\n") and not accumulated:match("^%s*```") then
           content = accumulated
+          debug.log("inst_extract", "no fence, treating as raw (" .. #content .. " chars)")
         else
+          debug.log("inst_extract", "waiting for fence, accumulated: " .. vim.inspect(accumulated:sub(1, 80)))
           return nil -- wait for more data
         end
       end
@@ -189,6 +193,7 @@ function M.instruct(l0, l1, config)
       local fence_start = accumulated:find("```[^\n]*\n")
       local after = accumulated:find("\n", fence_start) + 1
       content = accumulated:sub(after)
+      debug.log("inst_extract", "inside fence, content: " .. #content .. " chars")
     end
 
     -- check for closing fence
@@ -196,35 +201,26 @@ function M.instruct(l0, l1, config)
     if close then
       content = content:sub(1, close)
       fence_done = true
+      debug.log("inst_extract", "fence closed! final content: " .. #content .. " chars")
     end
 
     return content
   end
 
   --- write content to buffer (gp.nvim style: only update unfinished lines)
+  local prev_written_lines = 1 -- we start with 1 placeholder line
+
+  --- write content to buffer (gp.nvim style: only update unfinished lines)
   local function write_to_buffer()
     local text = extract_content()
     if not text then
+      debug.log("inst_write", "no content yet, skipping")
       return
     end
 
     if not vim.api.nvim_buf_is_valid(bufnr) then
       return
     end
-
-    if skip_first_undojoin then
-      skip_first_undojoin = false
-    else
-      undojoin(bufnr)
-    end
-
-    -- clean previous unfinished lines
-    local prev_line_count = #vim.split(content, "\n")
-    -- we need to count based on what was written before
-    local old_total = math.max(1, finished_lines + 1) -- at least the placeholder
-    vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + old_total, false, {})
-
-    undojoin(bufnr)
 
     -- split content into lines and add prefix
     local result_lines = vim.split(text, "\n", { plain = true })
@@ -234,7 +230,32 @@ function M.instruct(l0, l1, config)
       end
     end
 
-    -- insert only unfinished lines (from finished_lines onward)
+    debug.log(
+      "inst_write",
+      string.format(
+        "finished=%d prev_written=%d new_total=%d del=[%d,%d) ins_at=%d ins_count=%d",
+        finished_lines,
+        prev_written_lines,
+        #result_lines,
+        first_line + finished_lines,
+        first_line + prev_written_lines,
+        first_line + finished_lines,
+        #result_lines - finished_lines
+      )
+    )
+
+    if skip_first_undojoin then
+      skip_first_undojoin = false
+    else
+      undojoin(bufnr)
+    end
+
+    -- delete everything from finished_lines onward (the unfinished part + placeholder)
+    vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + prev_written_lines, false, {})
+
+    undojoin(bufnr)
+
+    -- insert unfinished lines (from finished_lines onward)
     local unfinished = {}
     for i = finished_lines + 1, #result_lines do
       table.insert(unfinished, result_lines[i])
@@ -242,7 +263,9 @@ function M.instruct(l0, l1, config)
 
     vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + finished_lines, false, unfinished)
 
-    -- all lines except the last are now "finished"
+    -- update tracking
+    prev_written_lines = #result_lines
+    -- all lines except the last are "finished" (last may still receive more chars)
     finished_lines = math.max(0, #result_lines - 1)
   end
 
@@ -252,6 +275,7 @@ function M.instruct(l0, l1, config)
       if #chunk == 0 then
         return
       end
+      debug.log("inst_chunk", vim.inspect(chunk):sub(1, 120))
       accumulated = accumulated .. chunk
       vim.schedule(write_to_buffer)
     end,
