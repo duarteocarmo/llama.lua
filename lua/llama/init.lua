@@ -6,6 +6,7 @@ local ring = require("llama.ring")
 local cache = require("llama.cache")
 local debug = require("llama.debug")
 local server = require("llama.server")
+local inst = require("llama.inst")
 
 local M = {}
 
@@ -243,6 +244,37 @@ function M.enable()
     end, { silent = true })
   end
 
+  -- instruct keymaps
+  if M.config.keymap_inst_trigger ~= "" then
+    vim.keymap.set("v", M.config.keymap_inst_trigger, function()
+      local l0 = vim.fn.line("'<")
+      local l1 = vim.fn.line("'>")
+      -- exit visual mode first
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+      inst.instruct(l0, l1, M.config)
+    end, { silent = true })
+  end
+  if M.config.keymap_inst_rerun ~= "" then
+    vim.keymap.set("n", M.config.keymap_inst_rerun, function()
+      inst.rerun(M.config)
+    end, { silent = true })
+  end
+  if M.config.keymap_inst_continue ~= "" then
+    vim.keymap.set("n", M.config.keymap_inst_continue, function()
+      inst.continue(M.config)
+    end, { silent = true })
+  end
+  if M.config.keymap_inst_accept ~= "" then
+    vim.keymap.set("n", M.config.keymap_inst_accept, function()
+      inst.accept(M.config)
+    end, { silent = true })
+  end
+  if M.config.keymap_inst_cancel ~= "" then
+    vim.keymap.set("n", M.config.keymap_inst_cancel, function()
+      inst.cancel()
+    end, { silent = true })
+  end
+
   setup_autocmds()
   fim.hide(M.config)
 
@@ -282,6 +314,21 @@ function M.disable()
   if M.config.keymap_debug_toggle ~= "" then
     pcall(vim.keymap.del, "n", M.config.keymap_debug_toggle)
   end
+  if M.config.keymap_inst_trigger ~= "" then
+    pcall(vim.keymap.del, "v", M.config.keymap_inst_trigger)
+  end
+  if M.config.keymap_inst_rerun ~= "" then
+    pcall(vim.keymap.del, "n", M.config.keymap_inst_rerun)
+  end
+  if M.config.keymap_inst_continue ~= "" then
+    pcall(vim.keymap.del, "n", M.config.keymap_inst_continue)
+  end
+  if M.config.keymap_inst_accept ~= "" then
+    pcall(vim.keymap.del, "n", M.config.keymap_inst_accept)
+  end
+  if M.config.keymap_inst_cancel ~= "" then
+    pcall(vim.keymap.del, "n", M.config.keymap_inst_cancel)
+  end
 
   M.enabled = false
   debug.log("plugin disabled")
@@ -315,6 +362,10 @@ function M.setup(opts)
   -- highlights
   vim.api.nvim_set_hl(0, "llama_hl_fim_hint", { fg = "#ff772f", default = true })
   vim.api.nvim_set_hl(0, "llama_hl_fim_info", { fg = "#77ff2f", default = true })
+  vim.api.nvim_set_hl(0, "llama_hl_inst_src", { bg = "#554433", default = true })
+  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_proc", { fg = "#77ff2f", default = true })
+  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_gen", { fg = "#77ff2f", default = true })
+  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_ready", { fg = "#ff772f", default = true })
 
   if vim.fn.executable("curl") ~= 1 then
     vim.notify('llama.lua requires "curl" to be available', vim.log.levels.ERROR)
@@ -334,6 +385,9 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("LlamaToggleAutoFim", function()
     M.toggle_auto_fim()
   end, {})
+  vim.api.nvim_create_user_command("LlamaInstruct", function(opts)
+    inst.instruct(opts.line1, opts.line2, M.config)
+  end, { range = "%" })
   vim.api.nvim_create_user_command("LlamaServerStart", function()
     server.start(M.config)
   end, {})
