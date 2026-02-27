@@ -1,17 +1,13 @@
 # 🦙🌙 llama.lua
 
-Dumb Lua rewrite of [llama.vim](https://github.com/ggml-org/llama.vim) for Neovim. Local LLM-assisted FIM code completion via [llama.cpp](https://github.com/ggml-org/llama.cpp).
+Lua rewrite of [llama.vim](https://github.com/ggml-org/llama.vim) for Neovim. Local LLM-assisted code completion via [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
-All credit to the [llama.vim](https://github.com/ggml-org/llama.vim) authors.
+## Additions
 
-## Additions to llama.vim
-
-| Feature | Description |
-|---|---|
-| `auto_fim_debounce_ms` | Completions wait until you stop typing. Default `300`ms, set `0` to disable. |
-| `server_managed` | Auto-start `llama-server` if not running, reuse across instances, stop on exit. Default `false`. |
-| `server_args` | Arguments passed to `llama-server`. Default `{"--fim-qwen-7b-default"}`. |
-| `filetypes` | Per-filetype control, like [copilot.lua](https://github.com/zbirenbaum/copilot.lua). Map of `filetype = bool\|function`. |
+- **Debounced completions** — `auto_fim_debounce_ms` (default 300ms), completions wait until you stop typing
+- **Server management** — `server_managed` auto-starts `llama-server`, reuses across instances, stops on exit
+- **Filetype filtering** — `filetypes` table for per-filetype control (like copilot.lua)
+- **Inline instruct** — visual select + instruction, streams replacement directly into buffer (inspired by gp.nvim), undo with `u`
 
 ## Requirements
 
@@ -54,26 +50,10 @@ lua require("llama").setup()
 ```
 </details>
 
-<details>
-<summary>Manual</summary>
-
-```bash
-git clone https://github.com/duarteocarmo/llama.lua \
-  ~/.local/share/nvim/site/pack/plugins/start/llama.lua
-```
-
-```lua
-require("llama").setup()
-```
-</details>
-
 ## Configuration
-
-Same options as [llama.vim](https://github.com/ggml-org/llama.vim/blob/master/autoload/llama.vim), plus the additions above:
 
 ```lua
 require("llama").setup({
-  -- same as llama.vim
   endpoint_fim           = "http://127.0.0.1:8012/infill",
   endpoint_inst          = "http://127.0.0.1:8012/v1/chat/completions",
   model_fim              = "",
@@ -93,19 +73,6 @@ require("llama").setup({
   ring_chunk_size        = 64,
   ring_scope             = 1024,
   ring_update_ms         = 1000,
-  keymap_fim_trigger     = "<leader>llf",
-  keymap_fim_accept_full = "<Tab>",
-  keymap_fim_accept_line = "<S-Tab>",
-  keymap_fim_accept_word = "<leader>ll]",
-  keymap_inst_trigger    = "<leader>lli",
-  keymap_inst_rerun      = "<leader>llr",
-  keymap_inst_continue   = "<leader>llc",
-  keymap_inst_accept     = "<Tab>",
-  keymap_inst_cancel     = "<Esc>",
-  keymap_debug_toggle    = "<leader>lld",
-  enable_at_startup      = true,
-
-  -- llama.lua additions
   auto_fim_debounce_ms   = 300,
   server_managed         = false,
   server_args            = { "--fim-qwen-7b-default" },
@@ -118,26 +85,14 @@ require("llama").setup({
     gitrebase     = false,
     hgcommit      = false,
   },
+  keymap_fim_trigger     = "<leader>llf",
+  keymap_fim_accept_full = "<Tab>",
+  keymap_fim_accept_line = "<S-Tab>",
+  keymap_fim_accept_word = "<leader>ll]",
+  keymap_inst_trigger    = "<leader>lli",
+  keymap_debug_toggle    = "<leader>lld",
+  enable_at_startup      = true,
 })
-```
-
-The `filetypes` table works like [copilot.lua](https://github.com/zbirenbaum/copilot.lua#filetypes): values can be `true`, `false`, or a function returning a boolean. The `"*"` key is the fallback for any filetype not listed.
-
-```lua
--- example: disable for everything except python and lua
-filetypes = {
-  python = true,
-  lua = true,
-  ["*"] = false,
-}
-
--- example: conditional per-buffer
-filetypes = {
-  sh = function()
-    -- disable for .env files
-    return not vim.fs.basename(vim.api.nvim_buf_get_name(0)):match("^%.env")
-  end,
-}
 ```
 
 ## Commands
@@ -148,8 +103,15 @@ filetypes = {
 | `:LlamaDisable` | Disable |
 | `:LlamaToggle` | Toggle |
 | `:LlamaToggleAutoFim` | Toggle auto FIM |
+| `:LlamaInstruct` | Instruct (visual selection) |
 | `:LlamaServerStart` | Start llama-server |
-| `:LlamaServerStop` | Stop llama-server (only if we started it) |
+| `:LlamaServerStop` | Stop llama-server |
+
+## Inspiration
+
+- [llama.vim](https://github.com/ggml-org/llama.vim) — the original, all credit to the authors
+- [copilot.lua](https://github.com/zbirenbaum/copilot.lua) — filetype filtering, non-blocking ghost text
+- [gp.nvim](https://github.com/Robitx/gp.nvim) — inline replace instruct pattern
 
 ## License
 
