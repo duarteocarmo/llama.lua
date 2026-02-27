@@ -32,9 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         nvim-versions: ['stable', 'nightly']
-    name: test
+    name: test (${{ matrix.nvim-versions }})
     steps:
       - uses: actions/checkout@v4
 
