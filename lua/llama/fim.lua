@@ -13,7 +13,12 @@ M.timer_fim = nil
 M.indent_last = -1
 M.pos_y_pick = -9999
 
+-- generation counter: bumped on every hide/keystroke so stale async work aborts
+M._generation = 0
+
 local ns_fim = vim.api.nvim_create_namespace("llama_fim")
+local EXTMARK_HINT = 1
+local EXTMARK_LINES = 2
 
 --- Get local context around cursor
 ---@param pos_x number 0-indexed column
@@ -235,6 +240,7 @@ function M.render(pos_x, pos_y, raw, config)
   end
 
   vim.api.nvim_buf_set_extmark(bufnr, ns_fim, pos_y - 1, pos_x, {
+    id = EXTMARK_HINT,
     virt_text = virt_text,
     virt_text_pos = (content[1] == "" and #content == 1) and "eol" or "overlay",
   })
@@ -245,6 +251,7 @@ function M.render(pos_x, pos_y, raw, config)
       virt_lines[#virt_lines + 1] = { { content[i], "llama_hl_fim_hint" } }
     end
     vim.api.nvim_buf_set_extmark(bufnr, ns_fim, pos_y - 1, 0, {
+      id = EXTMARK_LINES,
       virt_lines = virt_lines,
     })
   end
@@ -279,9 +286,11 @@ end
 --- Hide the FIM suggestion
 function M.hide(config)
   M.hint_shown = false
+  M._generation = M._generation + 1
 
   local bufnr = vim.api.nvim_get_current_buf()
-  vim.api.nvim_buf_clear_namespace(bufnr, ns_fim, 0, -1)
+  pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_fim, EXTMARK_HINT)
+  pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_fim, EXTMARK_LINES)
 
   if config and config.show_info == 1 then
     vim.o.statusline = ""
@@ -301,7 +310,9 @@ function M.hide(config)
   end
 end
 
---- Try to show a hint from cache
+--- Try to show a hint from cache.
+--- The backwards cache scan (up to 128 iterations) is chunked into batches
+--- via vim.schedule so it never blocks the main thread for more than ~1ms.
 function M.try_hint(pos_x, pos_y, config)
   local mode = vim.api.nvim_get_mode().mode
   if not mode:match("^i") then
@@ -313,14 +324,32 @@ function M.try_hint(pos_x, pos_y, config)
 
   local raw = cache.get(hash)
 
-  -- look back up to 128 characters for a cached completion
-  if raw == nil then
-    local pm = ctx.prefix .. ctx.middle
-    local best = 0
+  if raw ~= nil then
+    M.render(pos_x, pos_y, raw, config)
+    if M.hint_shown then
+      M.request(pos_x, pos_y, true, M.data.content, true, config)
+    end
+    return
+  end
 
-    for i = 0, 127 do
+  -- run the backwards cache scan in batches so we don't block input
+  local pm = ctx.prefix .. ctx.middle
+  local suffix = ctx.suffix
+  local gen = M._generation
+  local best_raw = nil
+  local best_len = 0
+  local BATCH = 16
+
+  local function scan_batch(start_i)
+    -- abort if a new keystroke arrived
+    if M._generation ~= gen then
+      return
+    end
+
+    local end_i = math.min(start_i + BATCH - 1, 127)
+    for i = start_i, end_i do
       local removed = pm:sub(-(1 + i))
-      local ctx_new = pm:sub(1, -(2 + i)) .. "Î" .. ctx.suffix
+      local ctx_new = pm:sub(1, -(2 + i)) .. "Î" .. suffix
       local hash_new = util.sha256(ctx_new)
       local response_cached = cache.get(hash_new)
 
@@ -330,27 +359,33 @@ function M.try_hint(pos_x, pos_y, config)
           if resp.content:sub(1, i + 1) == removed then
             resp.content = resp.content:sub(i + 2)
             if #resp.content > 0 then
-              if raw == nil then
-                raw = vim.fn.json_encode(resp)
-              elseif #resp.content > best then
-                best = #resp.content
-                raw = vim.fn.json_encode(resp)
+              if best_raw == nil or #resp.content > best_len then
+                best_len = #resp.content
+                best_raw = vim.fn.json_encode(resp)
               end
             end
           end
         end
       end
     end
-  end
 
-  if raw ~= nil then
-    M.render(pos_x, pos_y, raw, config)
-
-    -- speculative FIM
-    if M.hint_shown then
-      M.request(pos_x, pos_y, true, M.data.content, true, config)
+    if end_i >= 127 or M._generation ~= gen then
+      -- done scanning — render if we found something and generation is still current
+      if best_raw ~= nil and M._generation == gen then
+        M.render(pos_x, pos_y, best_raw, config)
+        if M.hint_shown then
+          M.request(pos_x, pos_y, true, M.data.content, true, config)
+        end
+      end
+    else
+      -- yield back to event loop, then continue
+      vim.schedule(function()
+        scan_batch(end_i + 1)
+      end)
     end
   end
+
+  scan_batch(0)
 end
 
 --- Accept the current suggestion
