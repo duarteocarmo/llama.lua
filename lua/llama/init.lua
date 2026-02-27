@@ -258,16 +258,9 @@ function M.enable()
       inst.continue(M.config)
     end, { silent = true })
   end
-  if M.config.keymap_inst_accept ~= "" then
-    vim.keymap.set("n", M.config.keymap_inst_accept, function()
-      inst.accept(M.config)
-    end, { silent = true })
-  end
-  if M.config.keymap_inst_cancel ~= "" then
-    vim.keymap.set("n", M.config.keymap_inst_cancel, function()
-      inst.cancel()
-    end, { silent = true })
-  end
+  -- note: inst_accept and inst_cancel keymaps are set/removed dynamically
+  -- by the instruct module when a request is active, to avoid globally
+  -- overriding <Tab> and <Esc> in normal mode
 
   setup_autocmds()
   fim.hide(M.config)
@@ -316,12 +309,6 @@ function M.disable()
   end
   if M.config.keymap_inst_continue ~= "" then
     pcall(vim.keymap.del, "n", M.config.keymap_inst_continue)
-  end
-  if M.config.keymap_inst_accept ~= "" then
-    pcall(vim.keymap.del, "n", M.config.keymap_inst_accept)
-  end
-  if M.config.keymap_inst_cancel ~= "" then
-    pcall(vim.keymap.del, "n", M.config.keymap_inst_cancel)
   end
 
   M.enabled = false

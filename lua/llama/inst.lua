@@ -162,8 +162,38 @@ local function update_status(id, status, config)
   end
 end
 
+--- Set accept/cancel keymaps (only when requests are active)
+local function set_keymaps(config)
+  if vim.tbl_count(M.reqs) > 0 then
+    return -- already set
+  end
+  if config.keymap_inst_accept and config.keymap_inst_accept ~= "" then
+    vim.keymap.set("n", config.keymap_inst_accept, function()
+      M.accept(config)
+    end, { silent = true, desc = "llama instruct accept" })
+  end
+  if config.keymap_inst_cancel and config.keymap_inst_cancel ~= "" then
+    vim.keymap.set("n", config.keymap_inst_cancel, function()
+      M.cancel()
+    end, { silent = true, desc = "llama instruct cancel" })
+  end
+end
+
+--- Remove accept/cancel keymaps when no requests remain
+local function clear_keymaps(config)
+  if vim.tbl_count(M.reqs) > 0 then
+    return -- still have active requests
+  end
+  if config.keymap_inst_accept and config.keymap_inst_accept ~= "" then
+    pcall(vim.keymap.del, "n", config.keymap_inst_accept)
+  end
+  if config.keymap_inst_cancel and config.keymap_inst_cancel ~= "" then
+    pcall(vim.keymap.del, "n", config.keymap_inst_cancel)
+  end
+end
+
 --- Remove a request and clean up extmarks/job
-local function remove_req(id)
+local function remove_req(id, config)
   local req = M.reqs[id]
   if not req then
     return
@@ -178,6 +208,10 @@ local function remove_req(id)
   end
 
   M.reqs[id] = nil
+
+  if config then
+    clear_keymaps(config)
+  end
 end
 
 --- Parse streaming SSE response chunks
@@ -243,7 +277,7 @@ function M.send(req_id, messages, config)
       vim.schedule(function()
         vim.notify("llama.lua: instruct job failed with exit code " .. exit_code, vim.log.levels.WARN)
       end)
-      remove_req(req_id)
+      remove_req(req_id, config)
       return
     end
     if not M.reqs[req_id] then
@@ -304,6 +338,7 @@ function M.instruct(l0, l1, config)
     extmark_virt = -1,
   }
 
+  set_keymaps(config)
   M.reqs[req_id] = req
 
   -- highlight selected text
@@ -336,7 +371,7 @@ function M.accept(config)
         local id = req.id
         local bufnr = req.bufnr
         local l0, l1 = req.range[1], req.range[2]
-        remove_req(id)
+        remove_req(id, config)
 
         vim.api.nvim_buf_set_lines(bufnr, l0 - 1, l1, false, result_lines)
         return
@@ -349,12 +384,12 @@ function M.accept(config)
 end
 
 --- Cancel the request under cursor
-function M.cancel()
+function M.cancel(config)
   local line = vim.fn.line(".")
   for _, req in pairs(M.reqs) do
     update_pos(req)
     if line >= req.range[1] and line <= req.range[2] then
-      remove_req(req.id)
+      remove_req(req.id, config)
       return
     end
   end
