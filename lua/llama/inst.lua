@@ -124,7 +124,7 @@ function M.instruct(l0, l1, config)
 
   local request = {
     messages = messages,
-    temperature = 0.3,
+    temperature = 0,
     stream = true,
   }
   if config.model_inst and #config.model_inst > 0 then
