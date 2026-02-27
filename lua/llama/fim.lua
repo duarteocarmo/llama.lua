@@ -274,22 +274,18 @@ function M.render(pos_x, pos_y, raw, config)
 end
 
 function M.hide(config)
-  local t0 = vim.loop.hrtime()
-  local was_shown = M.hint_shown
   M.hint_shown = false
   M._generation = M._generation + 1
 
   local bufnr = vim.api.nvim_get_current_buf()
   pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_fim, EXTMARK_HINT)
   pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_fim, EXTMARK_LINES)
-  local t_extmarks = (vim.loop.hrtime() - t0) / 1e6
 
   if config and config.show_info == 1 then
     vim.o.statusline = ""
   end
 
-  local t1 = vim.loop.hrtime()
-  if was_shown and config then
+  if config then
     if config.keymap_fim_accept_full ~= "" then
       pcall(vim.keymap.del, "i", config.keymap_fim_accept_full, { buffer = true })
     end
@@ -300,12 +296,6 @@ function M.hide(config)
       pcall(vim.keymap.del, "i", config.keymap_fim_accept_word, { buffer = true })
     end
   end
-  local t_keymaps = (vim.loop.hrtime() - t1) / 1e6
-
-  debug.log(
-    "fim_hide",
-    string.format("was_shown=%s extmarks=%.2fms keymaps=%.2fms", tostring(was_shown), t_extmarks, t_keymaps)
-  )
 end
 
 function M.try_hint(pos_x, pos_y, config)
