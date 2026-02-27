@@ -87,21 +87,35 @@ function M.stop()
   M.pid = nil
 end
 
+--- Check if server is reachable and notify
+---@param config table
+function M.check(config)
+  local port = port_from_endpoint(config.endpoint_fim)
+  if port_in_use(port) then
+    vim.notify("llama.lua: server running on :" .. port, vim.log.levels.INFO)
+    debug.log("server", "detected on :" .. port)
+  else
+    vim.notify("llama.lua: no server on :" .. port, vim.log.levels.WARN)
+    debug.log("server", "nothing on :" .. port)
+  end
+end
+
 --- Setup VimLeavePre autocmd to clean up on exit
 ---@param config table
 function M.setup(config)
-  if not config.server_managed then
-    return
+  if config.server_managed then
+    M.start(config)
+
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+      group = vim.api.nvim_create_augroup("llama_server", { clear = true }),
+      callback = function()
+        M.stop()
+      end,
+    })
+  else
+    -- just report what we find
+    M.check(config)
   end
-
-  M.start(config)
-
-  vim.api.nvim_create_autocmd("VimLeavePre", {
-    group = vim.api.nvim_create_augroup("llama_server", { clear = true }),
-    callback = function()
-      M.stop()
-    end,
-  })
 end
 
 return M
