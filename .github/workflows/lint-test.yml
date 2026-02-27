@@ -3,16 +3,27 @@ on: [push, pull_request]
 name: lint-test
 
 jobs:
-  stylua:
-    name: stylua
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: JohnnyMorganz/stylua-action@v4
         with:
           version: latest
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --color always --check lua
+          args: --color always --check lua/ tests/
+
+      - name: install selene
+        run: |
+          curl -L https://github.com/Kampfkarren/selene/releases/latest/download/selene-light-linux.zip -o selene.zip
+          unzip selene.zip
+          chmod +x selene
+          sudo mv selene /usr/local/bin/
+
+      - name: selene
+        run: selene lua/
 
   test:
     runs-on: ubuntu-latest
@@ -22,8 +33,7 @@ jobs:
         nvim-versions: ['stable', 'nightly']
     name: test
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - uses: rhysd/action-setup-vim@v1
         with:

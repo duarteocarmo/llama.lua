@@ -48,20 +48,18 @@ local function parse_sse(lines)
     if #line > 6 and line:sub(1, 6) == "data: " then
       line = line:sub(7)
     end
-    if line == "" or line:match("^%s*$") or line == "[DONE]" then
-      goto continue
-    end
-    local ok, response = pcall(vim.fn.json_decode, line)
-    if ok then
-      local choices = response.choices or { {} }
-      if choices[1].delta and choices[1].delta.content then
-        local delta = choices[1].delta.content
-        if type(delta) == "string" then
-          content = content .. delta
+    if line ~= "" and not line:match("^%s*$") and line ~= "[DONE]" then
+      local ok, response = pcall(vim.fn.json_decode, line)
+      if ok then
+        local choices = response.choices or { {} }
+        if choices[1].delta and choices[1].delta.content then
+          local delta = choices[1].delta.content
+          if type(delta) == "string" then
+            content = content .. delta
+          end
         end
       end
     end
-    ::continue::
   end
   return content
 end
