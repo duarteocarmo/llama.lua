@@ -246,13 +246,7 @@ function M.enable()
 
   -- instruct keymaps
   if M.config.keymap_inst_trigger ~= "" then
-    vim.keymap.set("v", M.config.keymap_inst_trigger, function()
-      local l0 = vim.fn.line("'<")
-      local l1 = vim.fn.line("'>")
-      -- exit visual mode first
-      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
-      inst.instruct(l0, l1, M.config)
-    end, { silent = true })
+    vim.keymap.set("v", M.config.keymap_inst_trigger, ":LlamaInstruct<CR>", { silent = true })
   end
   if M.config.keymap_inst_rerun ~= "" then
     vim.keymap.set("n", M.config.keymap_inst_rerun, function()

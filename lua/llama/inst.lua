@@ -259,6 +259,13 @@ end
 
 --- Main entry: visual selection -> prompt for instruction -> send
 function M.instruct(l0, l1, config)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local buf_lines = vim.api.nvim_buf_line_count(bufnr)
+
+  -- clamp to valid range
+  l0 = math.max(1, math.min(l0, buf_lines))
+  l1 = math.max(l0, math.min(l1, buf_lines))
+
   local req_id = M.req_id
   M.req_id = M.req_id + 1
 
@@ -283,8 +290,6 @@ function M.instruct(l0, l1, config)
 
   debug.log("inst_send | " .. inst)
 
-  local bufnr = vim.api.nvim_get_current_buf()
-
   local req = {
     id = req_id,
     bufnr = bufnr,
@@ -302,14 +307,10 @@ function M.instruct(l0, l1, config)
   M.reqs[req_id] = req
 
   -- highlight selected text
-  local last_line = vim.fn.getline(l1) or ""
-  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
-  local end_row = math.min(l1 - 1, buf_line_count - 1)
-  req.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns_inst, math.min(l0 - 1, buf_line_count - 1), 0, {
-    end_row = end_row,
-    end_col = #last_line,
+  req.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns_inst, l0 - 1, 0, {
+    end_row = l1 - 1,
+    end_col = #(vim.fn.getline(l1) or ""),
     hl_group = "llama_hl_inst_src",
-    strict = false,
   })
 
   update_status(req_id, "proc", config)
