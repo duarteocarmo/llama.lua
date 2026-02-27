@@ -302,10 +302,14 @@ function M.instruct(l0, l1, config)
   M.reqs[req_id] = req
 
   -- highlight selected text
-  req.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns_inst, l0 - 1, 0, {
-    end_row = l1 - 1,
-    end_col = #vim.fn.getline(l1),
+  local last_line = vim.fn.getline(l1) or ""
+  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
+  local end_row = math.min(l1 - 1, buf_line_count - 1)
+  req.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns_inst, math.min(l0 - 1, buf_line_count - 1), 0, {
+    end_row = end_row,
+    end_col = #last_line,
     hl_group = "llama_hl_inst_src",
+    strict = false,
   })
 
   update_status(req_id, "proc", config)
