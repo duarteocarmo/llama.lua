@@ -54,10 +54,6 @@ local default_config = {
   keymap_fim_accept_line = "<S-Tab>",
   keymap_fim_accept_word = "<leader>ll]",
   keymap_inst_trigger = "<leader>lli",
-  keymap_inst_rerun = "<leader>llr",
-  keymap_inst_continue = "<leader>llc",
-  keymap_inst_accept = "<Tab>",
-  keymap_inst_cancel = "<Esc>",
   keymap_debug_toggle = "<leader>lld",
   enable_at_startup = true,
 }
@@ -244,23 +240,10 @@ function M.enable()
     end, { silent = true })
   end
 
-  -- instruct keymaps
+  -- instruct keymap
   if M.config.keymap_inst_trigger ~= "" then
     vim.keymap.set("v", M.config.keymap_inst_trigger, ":LlamaInstruct<CR>", { silent = true })
   end
-  if M.config.keymap_inst_rerun ~= "" then
-    vim.keymap.set("n", M.config.keymap_inst_rerun, function()
-      inst.rerun(M.config)
-    end, { silent = true })
-  end
-  if M.config.keymap_inst_continue ~= "" then
-    vim.keymap.set("n", M.config.keymap_inst_continue, function()
-      inst.continue(M.config)
-    end, { silent = true })
-  end
-  -- note: inst_accept and inst_cancel keymaps are set/removed dynamically
-  -- by the instruct module when a request is active, to avoid globally
-  -- overriding <Tab> and <Esc> in normal mode
 
   setup_autocmds()
   fim.hide(M.config)
@@ -304,12 +287,7 @@ function M.disable()
   if M.config.keymap_inst_trigger ~= "" then
     pcall(vim.keymap.del, "v", M.config.keymap_inst_trigger)
   end
-  if M.config.keymap_inst_rerun ~= "" then
-    pcall(vim.keymap.del, "n", M.config.keymap_inst_rerun)
-  end
-  if M.config.keymap_inst_continue ~= "" then
-    pcall(vim.keymap.del, "n", M.config.keymap_inst_continue)
-  end
+  inst.stop()
 
   M.enabled = false
   debug.log("plugin disabled")
@@ -343,10 +321,6 @@ function M.setup(opts)
   -- highlights
   vim.api.nvim_set_hl(0, "llama_hl_fim_hint", { fg = "#ff772f", default = true })
   vim.api.nvim_set_hl(0, "llama_hl_fim_info", { fg = "#77ff2f", default = true })
-  vim.api.nvim_set_hl(0, "llama_hl_inst_src", { bg = "#554433", default = true })
-  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_proc", { fg = "#77ff2f", default = true })
-  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_gen", { fg = "#77ff2f", default = true })
-  vim.api.nvim_set_hl(0, "llama_hl_inst_virt_ready", { fg = "#ff772f", default = true })
 
   if vim.fn.executable("curl") ~= 1 then
     vim.notify('llama.lua requires "curl" to be available', vim.log.levels.ERROR)

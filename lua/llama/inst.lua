@@ -1,56 +1,139 @@
---- Instruction-based editing
-local ring = require("llama.ring")
+--- Instruction-based editing (gp.nvim-style inline replace)
 local debug = require("llama.debug")
 
 local M = {}
 
-M.reqs = {}
-M.req_id = 0
+M.active_job = nil
 
-local ns_inst = vim.api.nvim_create_namespace("llama_inst")
+--- Build chat messages for instruct (gp.nvim style)
+function M.build(selection, filetype, filename, instruction)
+  local system_prompt =
+    "You are a code editor. When given code and an instruction, output the modified code only. No explanations."
 
---- Build the chat messages for an instruct request
-function M.build(l0, l1, inst, inst_prev, config)
-  local prefix = vim.fn.getline(math.max(1, l0 - config.n_prefix), l0 - 1)
-  local selection = vim.fn.getline(l0, l1)
-  local suffix = vim.fn.getline(l1 + 1, math.min(vim.fn.line("$"), l1 + config.n_suffix))
+  local user_content = string.format(
+    "I have the following from %s:\n\n```%s\n%s\n```\n\n%s\n\nRespond exclusively with the snippet that should replace the selection above.",
+    filename,
+    filetype,
+    selection,
+    instruction
+  )
 
-  local messages
-  if inst_prev and #inst_prev > 0 then
-    messages = vim.deepcopy(inst_prev)
-  else
-    local extra = ring.get_extra()
-    local extra_text = ""
-    for _, chunk in ipairs(extra) do
-      extra_text = extra_text .. (chunk.text or "") .. "\n"
-    end
-
-    local system_prompt =
-      "You are a text-editing assistant. Respond ONLY with the result of applying INSTRUCTION to SELECTION given the CONTEXT. Maintain the existing text indentation. Do not add extra code blocks. Respond only with the modified block. If the INSTRUCTION is a question, answer it directly. Do not output any extra separators. Consider the local context before (PREFIX) and after (SUFFIX) the SELECTION.\n"
-    system_prompt = system_prompt .. "\n"
-    system_prompt = system_prompt .. "--- CONTEXT     " .. string.rep("-", 40) .. "\n"
-    system_prompt = system_prompt .. extra_text .. "\n"
-    system_prompt = system_prompt .. "--- PREFIX      " .. string.rep("-", 40) .. "\n"
-    system_prompt = system_prompt .. table.concat(prefix, "\n") .. "\n"
-    system_prompt = system_prompt .. "--- SELECTION   " .. string.rep("-", 40) .. "\n"
-    system_prompt = system_prompt .. table.concat(selection, "\n") .. "\n"
-    system_prompt = system_prompt .. "--- SUFFIX      " .. string.rep("-", 40) .. "\n"
-    system_prompt = system_prompt .. table.concat(suffix, "\n") .. "\n"
-
-    messages = { { role = "system", content = system_prompt } }
-  end
-
-  local user_content = ""
-  if inst and #inst > 0 then
-    user_content = "INSTRUCTION: " .. inst
-  end
-  table.insert(messages, { role = "user", content = user_content })
-
-  return messages
+  return {
+    { role = "system", content = system_prompt },
+    { role = "user", content = user_content },
+  }
 end
 
---- Send a curl request for instruct
-local function send_curl(req_id, request, config, on_stdout, on_exit)
+--- Strip code fences from response, return only the content inside the first fence block
+function M.strip_fences(text)
+  -- find first opening fence (with optional language tag)
+  local fence_start = text:find("```[^\n]*\n")
+  if not fence_start then
+    -- no fences, return as-is
+    return text
+  end
+
+  -- skip past the opening fence line
+  local content_start = text:find("\n", fence_start) + 1
+
+  -- find closing fence
+  local fence_end = text:find("\n```", content_start)
+  if not fence_end then
+    -- no closing fence, return everything after opening
+    return text:sub(content_start)
+  end
+
+  return text:sub(content_start, fence_end)
+end
+
+--- Stop any active instruct job
+function M.stop()
+  if M.active_job then
+    pcall(vim.fn.jobstop, M.active_job)
+    M.active_job = nil
+  end
+end
+
+--- Parse SSE streaming chunks for content deltas
+local function parse_sse(lines)
+  local content = ""
+  for _, line in ipairs(lines) do
+    if #line > 6 and line:sub(1, 6) == "data: " then
+      line = line:sub(7)
+    end
+    if line == "" or line:match("^%s*$") or line == "[DONE]" then
+      goto continue
+    end
+    local ok, response = pcall(vim.fn.json_decode, line)
+    if ok then
+      local choices = response.choices or { {} }
+      if choices[1].delta and choices[1].delta.content then
+        local delta = choices[1].delta.content
+        if type(delta) == "string" then
+          content = content .. delta
+        end
+      end
+    end
+    ::continue::
+  end
+  return content
+end
+
+--- Main entry: visual selection -> prompt -> delete -> stream replacement
+function M.instruct(l0, l1, config)
+  M.stop()
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local buf_lines = vim.api.nvim_buf_line_count(bufnr)
+
+  l0 = math.max(1, math.min(l0, buf_lines))
+  l1 = math.max(l0, math.min(l1, buf_lines))
+
+  debug.log("instruct", string.format("range: %d-%d (buf has %d lines)", l0, l1, buf_lines))
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, l0 - 1, l1, false)
+  local selection = table.concat(lines, "\n")
+  local filetype = vim.bo[bufnr].filetype or ""
+  local filename = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t") or ""
+
+  -- measure indentation to preserve it
+  local min_indent = nil
+  local use_tabs = false
+  for _, line in ipairs(lines) do
+    if not line:match("^%s*$") then
+      local indent = line:match("^%s*")
+      if indent:match("\t") then
+        use_tabs = true
+      end
+      if min_indent == nil or #indent < min_indent then
+        min_indent = #indent
+      end
+    end
+  end
+  min_indent = min_indent or 0
+  local prefix = string.rep(use_tabs and "\t" or " ", min_indent)
+
+  -- prompt user for instruction
+  local instruction = vim.fn.input("Instruction: ")
+  if instruction == "" then
+    return
+  end
+
+  debug.log("instruct", "instruction: " .. instruction)
+
+  local messages = M.build(selection, filetype, filename, instruction)
+
+  local request = {
+    messages = messages,
+    temperature = 0.3,
+    stream = true,
+  }
+  if config.model_inst and #config.model_inst > 0 then
+    request.model = config.model_inst
+  end
+
+  local request_json = vim.fn.json_encode(request)
+
   local curl_args = {
     "curl",
     "--silent",
@@ -64,380 +147,132 @@ local function send_curl(req_id, request, config, on_stdout, on_exit)
     "--data",
     "@-",
   }
-
-  if config.model_inst and #config.model_inst > 0 then
-    request.model = config.model_inst
-  end
   if config.api_key and #config.api_key > 0 then
     table.insert(curl_args, "--header")
     table.insert(curl_args, "Authorization: Bearer " .. config.api_key)
   end
 
-  local request_json = vim.fn.json_encode(request)
-  local job = vim.fn.jobstart(curl_args, {
-    on_stdout = on_stdout,
-    on_exit = on_exit,
+  -- delete selection and place cursor at start
+  vim.api.nvim_buf_set_lines(bufnr, l0 - 1, l1, false, { "" })
+  vim.api.nvim_win_set_cursor(0, { l0, 0 })
+
+  local accumulated = ""
+  local current_line = l0 - 1 -- 0-indexed, the empty line we inserted
+  local first_token = true
+  local inside_fence = false
+  local fence_done = false
+
+  M.active_job = vim.fn.jobstart(curl_args, {
+    on_stdout = function(_, data, _)
+      local content = parse_sse(data)
+      if #content == 0 then
+        return
+      end
+      accumulated = accumulated .. content
+
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+
+        -- process accumulated content for fence stripping
+        local to_write = ""
+        if fence_done then
+          -- already got closing fence, ignore everything
+          return
+        end
+
+        -- check if we've entered a fence
+        if not inside_fence then
+          local fence_start = accumulated:find("```[^\n]*\n")
+          if fence_start then
+            inside_fence = true
+            local after = accumulated:find("\n", fence_start) + 1
+            to_write = accumulated:sub(after)
+            -- check if closing fence is already in this chunk
+            local close = to_write:find("\n```")
+            if close then
+              to_write = to_write:sub(1, close)
+              fence_done = true
+            end
+          else
+            -- no fence yet, might be raw code — wait for more or use as-is
+            -- if we see a newline and no fence pattern, treat as raw
+            if accumulated:find("\n") and not accumulated:match("^%s*```") then
+              to_write = accumulated
+            else
+              return
+            end
+          end
+        else
+          to_write = accumulated
+          local close = to_write:find("\n```")
+          if close then
+            to_write = to_write:sub(1, close)
+            fence_done = true
+          end
+        end
+
+        -- split into lines and write
+        local result_lines = vim.split(to_write, "\n", { plain = true })
+
+        -- add indentation prefix to each line
+        for i, line in ipairs(result_lines) do
+          if line ~= "" then
+            -- only add prefix if the line doesn't already have sufficient indent
+            if not line:match("^" .. prefix) then
+              result_lines[i] = prefix .. line
+            end
+          end
+        end
+
+        -- replace from our start position
+        local end_line = math.min(current_line + 1, vim.api.nvim_buf_line_count(bufnr))
+        vim.api.nvim_buf_set_lines(bufnr, current_line, end_line, false, result_lines)
+
+        -- track where we are now
+        current_line = current_line + #result_lines - 1
+
+        if first_token then
+          first_token = false
+          debug.log("instruct", "first token received")
+        end
+      end)
+    end,
+    on_exit = function(_, exit_code, _)
+      M.active_job = nil
+      vim.schedule(function()
+        if exit_code ~= 0 then
+          vim.notify("llama.lua: instruct failed (exit " .. exit_code .. ")", vim.log.levels.WARN)
+          return
+        end
+
+        -- if we never entered a fence, the accumulated content is raw
+        if not inside_fence and #accumulated > 0 and not fence_done then
+          if vim.api.nvim_buf_is_valid(bufnr) then
+            local result_lines = vim.split(accumulated, "\n", { plain = true })
+            for i, line in ipairs(result_lines) do
+              if line ~= "" and not line:match("^" .. prefix) then
+                result_lines[i] = prefix .. line
+              end
+            end
+            local end_line = math.min(current_line + 1, vim.api.nvim_buf_line_count(bufnr))
+            vim.api.nvim_buf_set_lines(bufnr, current_line, end_line, false, result_lines)
+          end
+        end
+
+        debug.log("instruct", "done")
+      end)
+    end,
     stdout_buffered = false,
   })
 
-  if job and job > 0 then
-    vim.fn.chansend(job, request_json)
-    vim.fn.chanclose(job, "stdin")
-  end
-
-  return job
-end
-
---- Update the position of a request's extmark range
-local function update_pos(req)
-  local extmark_pos = vim.api.nvim_buf_get_extmark_by_id(req.bufnr, ns_inst, req.extmark, {})
-  if #extmark_pos == 0 then
-    return
-  end
-  local extmark_line = extmark_pos[1] + 1
-  req.range[2] = extmark_line + req.range[2] - req.range[1]
-  req.range[1] = extmark_line
-end
-
---- Update the virtual text status display for a request
-local function update_status(id, status, config)
-  if not M.reqs[id] then
-    return
-  end
-
-  local req = M.reqs[id]
-  req.status = status
-  update_pos(req)
-
-  -- remove old virt extmark
-  if req.extmark_virt ~= -1 then
-    pcall(vim.api.nvim_buf_del_extmark, req.bufnr, ns_inst, req.extmark_virt)
-    req.extmark_virt = -1
-  end
-
-  local inst_trunc = req.inst
-  if #inst_trunc > 128 then
-    inst_trunc = inst_trunc:sub(1, 128) .. "..."
-  end
-
-  local sep = "====================================="
-  local hl = ""
-  local virt_lines = {}
-
-  if status == "ready" then
-    hl = "llama_hl_inst_virt_ready"
-    virt_lines = { { { sep, hl } } }
-    for _, line in ipairs(vim.split(req.result, "\n", { plain = true })) do
-      table.insert(virt_lines, { { line, hl } })
-    end
-  elseif status == "proc" then
-    hl = "llama_hl_inst_virt_proc"
-    virt_lines = {
-      { { sep, hl } },
-      { { string.format("Endpoint:    %s", config.endpoint_inst), hl } },
-      { { string.format("Model:       %s", config.model_inst), hl } },
-      { { string.format("Instruction: %s", inst_trunc), hl } },
-      { { "Processing ...", hl } },
-    }
-  elseif status == "gen" then
-    local preview = req.result:gsub(".*\n%s*", "")
-    if #req.result == 0 then
-      preview = "[thinking]"
-    end
-    hl = "llama_hl_inst_virt_gen"
-    virt_lines = {
-      { { sep, hl } },
-      { { string.format("Endpoint:    %s", config.endpoint_inst), hl } },
-      { { string.format("Model:       %s", config.model_inst), hl } },
-      { { string.format("Instruction: %s", inst_trunc), hl } },
-      { { string.format("Generating:  %4d tokens | %s", req.n_gen, preview), hl } },
-    }
-  end
-
-  if #virt_lines > 0 then
-    table.insert(virt_lines, { { sep, hl } })
-    req.extmark_virt = vim.api.nvim_buf_set_extmark(req.bufnr, ns_inst, req.range[2] - 1, 0, {
-      virt_lines = virt_lines,
-    })
-  end
-end
-
---- Set accept/cancel keymaps (only when requests are active)
-local function set_keymaps(config)
-  if vim.tbl_count(M.reqs) > 0 then
-    return -- already set
-  end
-  if config.keymap_inst_accept and config.keymap_inst_accept ~= "" then
-    vim.keymap.set("n", config.keymap_inst_accept, function()
-      M.accept(config)
-    end, { silent = true, desc = "llama instruct accept" })
-  end
-  if config.keymap_inst_cancel and config.keymap_inst_cancel ~= "" then
-    vim.keymap.set("n", config.keymap_inst_cancel, function()
-      M.cancel()
-    end, { silent = true, desc = "llama instruct cancel" })
-  end
-end
-
---- Remove accept/cancel keymaps when no requests remain
-local function clear_keymaps(config)
-  if vim.tbl_count(M.reqs) > 0 then
-    return -- still have active requests
-  end
-  if config.keymap_inst_accept and config.keymap_inst_accept ~= "" then
-    pcall(vim.keymap.del, "n", config.keymap_inst_accept)
-  end
-  if config.keymap_inst_cancel and config.keymap_inst_cancel ~= "" then
-    pcall(vim.keymap.del, "n", config.keymap_inst_cancel)
-  end
-end
-
---- Remove a request and clean up extmarks/job
-local function remove_req(id, config)
-  local req = M.reqs[id]
-  if not req then
-    return
-  end
-
-  pcall(vim.api.nvim_buf_del_extmark, req.bufnr, ns_inst, req.extmark)
-  if req.extmark_virt ~= -1 then
-    pcall(vim.api.nvim_buf_del_extmark, req.bufnr, ns_inst, req.extmark_virt)
-  end
-  if req.job then
-    pcall(vim.fn.jobstop, req.job)
-  end
-
-  M.reqs[id] = nil
-
-  if config then
-    clear_keymaps(config)
-  end
-end
-
---- Parse streaming SSE response chunks
-local function parse_response(lines)
-  local content = ""
-  for _, line in ipairs(lines) do
-    if #line > 6 and line:sub(1, 6) == "data: " then
-      line = line:sub(7)
-    end
-    if line == "" or line:match("^%s*$") then
-      goto continue
-    end
-    local ok, response = pcall(vim.fn.json_decode, line)
-    if ok then
-      local choices = response.choices or { {} }
-      if choices[1].delta and choices[1].delta.content then
-        local delta = choices[1].delta.content
-        if type(delta) == "string" then
-          content = content .. delta
-        end
-      elseif choices[1].message and choices[1].message.content then
-        local delta = choices[1].message.content
-        if type(delta) == "string" then
-          content = content .. delta
-        end
-      end
-    end
-    ::continue::
-  end
-  return content
-end
-
---- Send the actual instruct generation request
-function M.send(req_id, messages, config)
-  debug.log("inst_send")
-
-  local request = {
-    id_slot = req_id,
-    messages = messages,
-    min_p = 0.1,
-    temperature = 0.1,
-    samplers = { "min_p", "temperature" },
-    stream = true,
-    cache_prompt = true,
-  }
-
-  local req = M.reqs[req_id]
-
-  req.job = send_curl(req_id, request, config, function(_, data, _)
-    local content = parse_response(data)
-    if not M.reqs[req_id] then
-      return
-    end
-    if #content > 0 then
-      req.result = req.result .. content
-    end
-    req.n_gen = req.n_gen + 1
-    vim.schedule(function()
-      update_status(req_id, "gen", config)
-    end)
-  end, function(_, exit_code, _)
-    if exit_code ~= 0 then
-      vim.schedule(function()
-        vim.notify("llama.lua: instruct job failed with exit code " .. exit_code, vim.log.levels.WARN)
-      end)
-      remove_req(req_id, config)
-      return
-    end
-    if not M.reqs[req_id] then
-      return
-    end
-    vim.schedule(function()
-      update_status(req_id, "ready", config)
-      -- add assistant response for continuation
-      table.insert(req.inst_prev, { role = "assistant", content = req.result })
-    end)
-  end)
-end
-
---- Main entry: visual selection -> prompt for instruction -> send
-function M.instruct(l0, l1, config)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local buf_lines = vim.api.nvim_buf_line_count(bufnr)
-
-  -- clamp to valid range
-  l0 = math.max(1, math.min(l0, buf_lines))
-  l1 = math.max(l0, math.min(l1, buf_lines))
-
-  debug.log("instruct", string.format("range: %d-%d (buf has %d lines)", l0, l1, buf_lines))
-
-  local req_id = M.req_id
-  M.req_id = M.req_id + 1
-
-  -- send warmup request while user types instruction
-  local warmup_messages = M.build(l0, l1, "", nil, config)
-  local warmup_request = {
-    id_slot = req_id,
-    messages = warmup_messages,
-    samplers = {},
-    n_predict = 0,
-    stream = false,
-    cache_prompt = true,
-    response_fields = { "" },
-  }
-  send_curl(req_id, warmup_request, config, function() end, function() end)
-
-  -- prompt user
-  local inst = vim.fn.input("Instruction: ")
-  if inst == "" then
-    return
-  end
-
-  debug.log("inst_send | " .. inst)
-
-  local req = {
-    id = req_id,
-    bufnr = bufnr,
-    range = { l0, l1 },
-    status = "proc",
-    result = "",
-    inst = inst,
-    inst_prev = {},
-    job = nil,
-    n_gen = 0,
-    extmark = -1,
-    extmark_virt = -1,
-  }
-
-  set_keymaps(config)
-  M.reqs[req_id] = req
-
-  -- highlight selected text
-  req.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns_inst, l0 - 1, 0, {
-    end_row = l1 - 1,
-    end_col = #(vim.fn.getline(l1) or ""),
-    hl_group = "llama_hl_inst_src",
-  })
-
-  update_status(req_id, "proc", config)
-
-  req.inst_prev = M.build(l0, l1, inst, nil, config)
-  M.send(req_id, req.inst_prev, config)
-end
-
---- Accept: replace selection with result
-function M.accept(config)
-  local line = vim.fn.line(".")
-
-  for _, req in pairs(M.reqs) do
-    if req.status == "ready" then
-      update_pos(req)
-      if line >= req.range[1] and line <= req.range[2] then
-        local result_lines = vim.split(req.result, "\n", { plain = true })
-        -- remove trailing empty lines
-        while #result_lines > 0 and result_lines[#result_lines] == "" do
-          result_lines[#result_lines] = nil
-        end
-
-        local id = req.id
-        local bufnr = req.bufnr
-        local l0, l1 = req.range[1], req.range[2]
-        remove_req(id, config)
-
-        vim.api.nvim_buf_set_lines(bufnr, l0 - 1, l1, false, result_lines)
-        return
-      end
-    end
-  end
-
-  -- not on an active request — pass through Tab
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Tab>", true, false, true), "n", false)
-end
-
---- Cancel the request under cursor
-function M.cancel(config)
-  local line = vim.fn.line(".")
-  for _, req in pairs(M.reqs) do
-    update_pos(req)
-    if line >= req.range[1] and line <= req.range[2] then
-      remove_req(req.id, config)
-      return
-    end
-  end
-end
-
---- Rerun the request under cursor
-function M.rerun(config)
-  local lnum = vim.fn.line(".")
-  for _, req in pairs(M.reqs) do
-    update_pos(req)
-    if req.status == "ready" and lnum >= req.range[1] and lnum <= req.range[2] then
-      debug.log("inst_rerun")
-      req.result = ""
-      req.status = "proc"
-      req.n_gen = 0
-      -- remove the last assistant message
-      if #req.inst_prev > 0 then
-        table.remove(req.inst_prev)
-      end
-      update_status(req.id, "proc", config)
-      M.send(req.id, req.inst_prev, config)
-      return
-    end
-  end
-end
-
---- Continue with a new instruction on the same request
-function M.continue(config)
-  local lnum = vim.fn.line(".")
-  for _, req in pairs(M.reqs) do
-    update_pos(req)
-    if req.status == "ready" and lnum >= req.range[1] and lnum <= req.range[2] then
-      local inst = vim.fn.input("Next instruction: ")
-      if inst == "" then
-        return
-      end
-      debug.log("inst_continue | " .. inst)
-      req.result = ""
-      req.status = "proc"
-      req.inst = inst
-      req.n_gen = 0
-      update_status(req.id, "proc", config)
-      req.inst_prev = M.build(req.range[1], req.range[2], inst, req.inst_prev, config)
-      M.send(req.id, req.inst_prev, config)
-      return
-    end
+  if M.active_job and M.active_job > 0 then
+    vim.fn.chansend(M.active_job, request_json)
+    vim.fn.chanclose(M.active_job, "stdin")
+    debug.log("instruct", "request sent to " .. config.endpoint_inst)
+  else
+    vim.notify("llama.lua: failed to start instruct request", vim.log.levels.ERROR)
   end
 end
 
