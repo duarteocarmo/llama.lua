@@ -13,7 +13,7 @@ Lua rewrite of [llama.vim](https://github.com/ggml-org/llama.vim) for Neovim. Lo
 
 - Neovim ≥ 0.9
 - `curl`
-- A running [llama.cpp](https://github.com/ggml-org/llama.cpp) server, or `llama-server` in PATH with `server_managed = true`
+- `llama-server` in PATH if using `server_managed = true`, otherwise a running [llama.cpp](https://github.com/ggml-org/llama.cpp) server
 
 ## Installation
 
