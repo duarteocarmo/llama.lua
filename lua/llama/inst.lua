@@ -24,25 +24,17 @@ function M.build(selection, filetype, filename, instruction)
   }
 end
 
---- Strip code fences from response, return only the content inside the first fence block
+--- Strip code fences from completed response, return only content inside first fence block
 function M.strip_fences(text)
-  -- find first opening fence (with optional language tag)
   local fence_start = text:find("```[^\n]*\n")
   if not fence_start then
-    -- no fences, return as-is
     return text
   end
-
-  -- skip past the opening fence line
   local content_start = text:find("\n", fence_start) + 1
-
-  -- find closing fence
   local fence_end = text:find("\n```", content_start)
   if not fence_end then
-    -- no closing fence, return everything after opening
     return text:sub(content_start)
   end
-
   return text:sub(content_start, fence_end)
 end
 
@@ -77,6 +69,13 @@ local function parse_sse(lines)
     ::continue::
   end
   return content
+end
+
+--- Undojoin helper (like gp.nvim's helpers.undojoin)
+local function undojoin(buf)
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.cmd.undojoin)
+  end
 end
 
 --- Main entry: visual selection -> prompt -> delete -> stream replacement
@@ -152,92 +151,109 @@ function M.instruct(l0, l1, config)
     table.insert(curl_args, "Authorization: Bearer " .. config.api_key)
   end
 
-  -- delete selection and place cursor at start
+  -- delete selection and insert one empty line as placeholder
   vim.api.nvim_buf_set_lines(bufnr, l0 - 1, l1, false, { "" })
   vim.api.nvim_win_set_cursor(0, { l0, 0 })
 
-  local accumulated = ""
-  local current_line = l0 - 1 -- 0-indexed, the empty line we inserted
-  local first_token = true
+  -- streaming state (gp.nvim-style)
+  local accumulated = "" -- full raw response
+  local content = "" -- content inside fences (or raw if no fences)
+  local first_line = l0 - 1 -- 0-indexed insert point
+  local finished_lines = 0 -- lines fully written (won't be touched again)
+  local skip_first_undojoin = true
   local inside_fence = false
   local fence_done = false
 
+  --- extract content from accumulated, handling fence detection
+  local function extract_content()
+    if fence_done then
+      return content
+    end
+
+    if not inside_fence then
+      local fence_start = accumulated:find("```[^\n]*\n")
+      if fence_start then
+        inside_fence = true
+        local after = accumulated:find("\n", fence_start) + 1
+        content = accumulated:sub(after)
+      else
+        -- no fence yet — if we see a full line without fence markers, treat as raw
+        if accumulated:find("\n") and not accumulated:match("^%s*```") then
+          content = accumulated
+        else
+          return nil -- wait for more data
+        end
+      end
+    else
+      -- inside fence, update content from after the opening fence
+      local fence_start = accumulated:find("```[^\n]*\n")
+      local after = accumulated:find("\n", fence_start) + 1
+      content = accumulated:sub(after)
+    end
+
+    -- check for closing fence
+    local close = content:find("\n```")
+    if close then
+      content = content:sub(1, close)
+      fence_done = true
+    end
+
+    return content
+  end
+
+  --- write content to buffer (gp.nvim style: only update unfinished lines)
+  local function write_to_buffer()
+    local text = extract_content()
+    if not text then
+      return
+    end
+
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+
+    if skip_first_undojoin then
+      skip_first_undojoin = false
+    else
+      undojoin(bufnr)
+    end
+
+    -- clean previous unfinished lines
+    local prev_line_count = #vim.split(content, "\n")
+    -- we need to count based on what was written before
+    local old_total = math.max(1, finished_lines + 1) -- at least the placeholder
+    vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + old_total, false, {})
+
+    undojoin(bufnr)
+
+    -- split content into lines and add prefix
+    local result_lines = vim.split(text, "\n", { plain = true })
+    for i, line in ipairs(result_lines) do
+      if line ~= "" and not line:match("^" .. prefix) then
+        result_lines[i] = prefix .. line
+      end
+    end
+
+    -- insert only unfinished lines (from finished_lines onward)
+    local unfinished = {}
+    for i = finished_lines + 1, #result_lines do
+      table.insert(unfinished, result_lines[i])
+    end
+
+    vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + finished_lines, false, unfinished)
+
+    -- all lines except the last are now "finished"
+    finished_lines = math.max(0, #result_lines - 1)
+  end
+
   M.active_job = vim.fn.jobstart(curl_args, {
     on_stdout = function(_, data, _)
-      local content = parse_sse(data)
-      if #content == 0 then
+      local chunk = parse_sse(data)
+      if #chunk == 0 then
         return
       end
-      accumulated = accumulated .. content
-
-      vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(bufnr) then
-          return
-        end
-
-        -- process accumulated content for fence stripping
-        local to_write = ""
-        if fence_done then
-          -- already got closing fence, ignore everything
-          return
-        end
-
-        -- check if we've entered a fence
-        if not inside_fence then
-          local fence_start = accumulated:find("```[^\n]*\n")
-          if fence_start then
-            inside_fence = true
-            local after = accumulated:find("\n", fence_start) + 1
-            to_write = accumulated:sub(after)
-            -- check if closing fence is already in this chunk
-            local close = to_write:find("\n```")
-            if close then
-              to_write = to_write:sub(1, close)
-              fence_done = true
-            end
-          else
-            -- no fence yet, might be raw code — wait for more or use as-is
-            -- if we see a newline and no fence pattern, treat as raw
-            if accumulated:find("\n") and not accumulated:match("^%s*```") then
-              to_write = accumulated
-            else
-              return
-            end
-          end
-        else
-          to_write = accumulated
-          local close = to_write:find("\n```")
-          if close then
-            to_write = to_write:sub(1, close)
-            fence_done = true
-          end
-        end
-
-        -- split into lines and write
-        local result_lines = vim.split(to_write, "\n", { plain = true })
-
-        -- add indentation prefix to each line
-        for i, line in ipairs(result_lines) do
-          if line ~= "" then
-            -- only add prefix if the line doesn't already have sufficient indent
-            if not line:match("^" .. prefix) then
-              result_lines[i] = prefix .. line
-            end
-          end
-        end
-
-        -- replace from our start position
-        local end_line = math.min(current_line + 1, vim.api.nvim_buf_line_count(bufnr))
-        vim.api.nvim_buf_set_lines(bufnr, current_line, end_line, false, result_lines)
-
-        -- track where we are now
-        current_line = current_line + #result_lines - 1
-
-        if first_token then
-          first_token = false
-          debug.log("instruct", "first token received")
-        end
-      end)
+      accumulated = accumulated .. chunk
+      vim.schedule(write_to_buffer)
     end,
     on_exit = function(_, exit_code, _)
       M.active_job = nil
@@ -247,19 +263,36 @@ function M.instruct(l0, l1, config)
           return
         end
 
-        -- if we never entered a fence, the accumulated content is raw
-        if not inside_fence and #accumulated > 0 and not fence_done then
-          if vim.api.nvim_buf_is_valid(bufnr) then
-            local result_lines = vim.split(accumulated, "\n", { plain = true })
-            for i, line in ipairs(result_lines) do
-              if line ~= "" and not line:match("^" .. prefix) then
-                result_lines[i] = prefix .. line
-              end
-            end
-            local end_line = math.min(current_line + 1, vim.api.nvim_buf_line_count(bufnr))
-            vim.api.nvim_buf_set_lines(bufnr, current_line, end_line, false, result_lines)
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+
+        -- final write to flush any remaining content
+        local text = extract_content()
+        if not text or #text == 0 then
+          text = accumulated
+        end
+
+        local result_lines = vim.split(text, "\n", { plain = true })
+
+        -- remove trailing empty lines
+        while #result_lines > 0 and result_lines[#result_lines] == "" do
+          result_lines[#result_lines] = nil
+        end
+
+        -- add prefix
+        for i, line in ipairs(result_lines) do
+          if line ~= "" and not line:match("^" .. prefix) then
+            result_lines[i] = prefix .. line
           end
         end
+
+        -- final replace of everything we've written
+        undojoin(bufnr)
+        local written_end = first_line + math.max(finished_lines + 1, 1)
+        local buf_total = vim.api.nvim_buf_line_count(bufnr)
+        written_end = math.min(written_end, buf_total)
+        vim.api.nvim_buf_set_lines(bufnr, first_line, written_end, false, result_lines)
 
         debug.log("instruct", "done")
       end)
