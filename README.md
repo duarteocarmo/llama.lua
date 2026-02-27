@@ -7,7 +7,7 @@ Lua rewrite of [llama.vim](https://github.com/ggml-org/llama.vim) for Neovim. Lo
 - **Debounced completions** — `auto_fim_debounce_ms` (default 300ms), completions wait until you stop typing
 - **Server management** — `server_managed` auto-starts `llama-server`, reuses across instances, stops on exit
 - **Filetype filtering** — `filetypes` table for per-filetype control (like copilot.lua)
-- **Inline instruct** — visual select + instruction, streams replacement directly into buffer (inspired by gp.nvim), undo with `u`
+- **Inline instruct** — visual select + instruction, streams replacement directly into buffer (inspired by [gp.nvim](https://github.com/Robitx/gp.nvim)), undo with `u`
 
 ## Requirements
 
