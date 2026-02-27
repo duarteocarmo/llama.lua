@@ -5,6 +5,7 @@ local fim = require("llama.fim")
 local ring = require("llama.ring")
 local cache = require("llama.cache")
 local debug = require("llama.debug")
+local server = require("llama.server")
 
 local M = {}
 
@@ -34,9 +35,19 @@ local default_config = {
   ring_chunk_size = 64,
   ring_scope = 1024,
   ring_update_ms = 1000,
-  -- debounce: delay FIM requests until user stops typing (ms)
-  -- ⭐ the only option not in llama.vim — set 0 to disable
-  auto_fim_debounce_ms = 300,
+  -- llama.lua additions (not in llama.vim)
+  auto_fim_debounce_ms = 300, -- debounce delay in ms, set 0 to disable
+  server_managed = false, -- auto-start/stop llama-server
+  server_args = { "--fim-qwen-7b-default" }, -- args passed to llama-server
+  filetypes = { -- filetype -> bool|function, like copilot.lua
+    ["*"] = true,
+    ["yaml"] = false,
+    ["markdown"] = false,
+    ["help"] = false,
+    ["gitcommit"] = false,
+    ["gitrebase"] = false,
+    ["hgcommit"] = false,
+  },
   keymap_fim_trigger = "<leader>llf",
   keymap_fim_accept_full = "<Tab>",
   keymap_fim_accept_line = "<S-Tab>",
@@ -55,9 +66,39 @@ M.config = vim.deepcopy(default_config)
 
 local augroup = vim.api.nvim_create_augroup("llama", { clear = true })
 
+--- Check if completions should be active for the current buffer
+local function buf_allowed()
+  local ft = vim.bo.filetype
+  local ft_config = M.config.filetypes
+
+  -- check specific filetype first
+  local val = ft_config[ft]
+  if val ~= nil then
+    if type(val) == "function" then
+      return val()
+    end
+    return val
+  end
+
+  -- fall back to wildcard
+  val = ft_config["*"]
+  if val ~= nil then
+    if type(val) == "function" then
+      return val()
+    end
+    return val
+  end
+
+  return true
+end
+
 local function on_move()
   M.t_last_move = vim.loop.hrtime()
   fim.hide(M.config)
+
+  if not buf_allowed() then
+    return
+  end
 
   -- defer cache lookup so it doesn't block the keystroke
   vim.schedule(function()
@@ -71,6 +112,10 @@ end
 local function on_cursor_moved_i()
   M.t_last_move = vim.loop.hrtime()
   fim.hide(M.config)
+
+  if not buf_allowed() then
+    return
+  end
 
   -- Debounce: cancel previous timer and start a new one
   if M.debounce_timer then
@@ -185,6 +230,9 @@ function M.enable()
   -- keymaps
   if M.config.keymap_fim_trigger ~= "" then
     vim.keymap.set("i", M.config.keymap_fim_trigger, function()
+      if not buf_allowed() then
+        return ""
+      end
       return fim.inline(false, false, M.config)
     end, { expr = true, silent = true })
   end
@@ -286,6 +334,15 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("LlamaToggleAutoFim", function()
     M.toggle_auto_fim()
   end, {})
+  vim.api.nvim_create_user_command("LlamaServerStart", function()
+    server.start(M.config)
+  end, {})
+  vim.api.nvim_create_user_command("LlamaServerStop", function()
+    server.stop()
+  end, {})
+
+  -- server management
+  server.setup(M.config)
 
   if M.config.enable_at_startup then
     M.enable()

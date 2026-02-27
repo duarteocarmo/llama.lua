@@ -3,6 +3,31 @@ describe("llama", function()
   local cache = require("llama.cache")
   local util = require("llama.util")
 
+  describe("filetypes", function()
+    it("defaults block yaml", function()
+      llama.setup({ enable_at_startup = false })
+      vim.bo.filetype = "yaml"
+      -- filetypes yaml = false by default
+      assert.is_false(llama.config.filetypes["yaml"])
+    end)
+
+    it("defaults allow lua via wildcard", function()
+      llama.setup({ enable_at_startup = false })
+      -- lua not in filetypes, wildcard is true
+      assert.is_true(llama.config.filetypes["*"])
+      assert.is_nil(llama.config.filetypes["lua"])
+    end)
+
+    it("user can disable all and allowlist", function()
+      llama.setup({
+        enable_at_startup = false,
+        filetypes = { ["*"] = false, python = true },
+      })
+      assert.is_false(llama.config.filetypes["*"])
+      assert.is_true(llama.config.filetypes["python"])
+    end)
+  end)
+
   describe("setup", function()
     it("uses defaults", function()
       llama.setup({ enable_at_startup = false })

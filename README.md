@@ -2,19 +2,22 @@
 
 Dumb Lua rewrite of [llama.vim](https://github.com/ggml-org/llama.vim) for Neovim. Local LLM-assisted FIM code completion via [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
-All credit to the [llama.vim](https://github.com/ggml-org/llama.vim) authors. I just wanted debounce.
+All credit to the [llama.vim](https://github.com/ggml-org/llama.vim) authors.
 
-## What's different
+## Additions to llama.vim
 
-One extra config option: `auto_fim_debounce_ms` (default `300`). Completions wait until you stop typing instead of firing on every keystroke. Set to `0` for original llama.vim behavior.
-
-Cache lookups and ghost text rendering are also deferred via `vim.schedule()` so the main thread isn't blocked.
+| Feature | Description |
+|---|---|
+| `auto_fim_debounce_ms` | Completions wait until you stop typing. Default `300`ms, set `0` to disable. |
+| `server_managed` | Auto-start `llama-server` if not running, reuse across instances, stop on exit. Default `false`. |
+| `server_args` | Arguments passed to `llama-server`. Default `{"--fim-qwen-7b-default"}`. |
+| `filetypes` | Per-filetype control, like [copilot.lua](https://github.com/zbirenbaum/copilot.lua). Map of `filetype = bool\|function`. |
 
 ## Requirements
 
 - Neovim ≥ 0.9
 - `curl`
-- A running [llama.cpp](https://github.com/ggml-org/llama.cpp) server with FIM support
+- A running [llama.cpp](https://github.com/ggml-org/llama.cpp) server, or `llama-server` in PATH with `server_managed = true`
 
 ## Installation
 
@@ -66,10 +69,11 @@ require("llama").setup()
 
 ## Configuration
 
-Same as [llama.vim](https://github.com/ggml-org/llama.vim/blob/master/autoload/llama.vim), plus `auto_fim_debounce_ms`:
+Same options as [llama.vim](https://github.com/ggml-org/llama.vim/blob/master/autoload/llama.vim), plus the additions above:
 
 ```lua
 require("llama").setup({
+  -- same as llama.vim
   endpoint_fim           = "http://127.0.0.1:8012/infill",
   endpoint_inst          = "http://127.0.0.1:8012/v1/chat/completions",
   model_fim              = "",
@@ -81,7 +85,7 @@ require("llama").setup({
   stop_strings           = {},
   t_max_prompt_ms        = 500,
   t_max_predict_ms       = 1000,
-  show_info              = 2,        -- 0=off, 1=statusline, 2=inline
+  show_info              = 2,
   auto_fim               = true,
   max_line_suffix        = 8,
   max_cache_keys         = 250,
@@ -100,8 +104,40 @@ require("llama").setup({
   keymap_inst_cancel     = "<Esc>",
   keymap_debug_toggle    = "<leader>lld",
   enable_at_startup      = true,
-  auto_fim_debounce_ms   = 300,      -- the only addition (set 0 to disable)
+
+  -- llama.lua additions
+  auto_fim_debounce_ms   = 300,
+  server_managed         = false,
+  server_args            = { "--fim-qwen-7b-default" },
+  filetypes              = {
+    ["*"]         = true,
+    yaml          = false,
+    markdown      = false,
+    help          = false,
+    gitcommit     = false,
+    gitrebase     = false,
+    hgcommit      = false,
+  },
 })
+```
+
+The `filetypes` table works like [copilot.lua](https://github.com/zbirenbaum/copilot.lua#filetypes): values can be `true`, `false`, or a function returning a boolean. The `"*"` key is the fallback for any filetype not listed.
+
+```lua
+-- example: disable for everything except python and lua
+filetypes = {
+  python = true,
+  lua = true,
+  ["*"] = false,
+}
+
+-- example: conditional per-buffer
+filetypes = {
+  sh = function()
+    -- disable for .env files
+    return not vim.fs.basename(vim.api.nvim_buf_get_name(0)):match("^%.env")
+  end,
+}
 ```
 
 ## Commands
@@ -112,6 +148,8 @@ require("llama").setup({
 | `:LlamaDisable` | Disable |
 | `:LlamaToggle` | Toggle |
 | `:LlamaToggleAutoFim` | Toggle auto FIM |
+| `:LlamaServerStart` | Start llama-server |
+| `:LlamaServerStop` | Stop llama-server (only if we started it) |
 
 ## License
 
