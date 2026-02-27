@@ -289,7 +289,7 @@ function M.hide(config)
   end
 
   local t1 = vim.loop.hrtime()
-  if config then
+  if was_shown and config then
     if config.keymap_fim_accept_full ~= "" then
       pcall(vim.keymap.del, "i", config.keymap_fim_accept_full, { buffer = true })
     end
