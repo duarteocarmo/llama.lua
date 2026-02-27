@@ -300,6 +300,8 @@ function M.instruct(l0, l1, config)
   l0 = math.max(1, math.min(l0, buf_lines))
   l1 = math.max(l0, math.min(l1, buf_lines))
 
+  debug.log("instruct", string.format("range: %d-%d (buf has %d lines)", l0, l1, buf_lines))
+
   local req_id = M.req_id
   M.req_id = M.req_id + 1
 
