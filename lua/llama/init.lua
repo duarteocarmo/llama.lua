@@ -1,6 +1,3 @@
---- llama.lua - Lua port of llama.vim for Neovim
---- FIM (Fill-in-Middle) code completion powered by llama.cpp
-
 local fim = require("llama.fim")
 local ring = require("llama.ring")
 local cache = require("llama.cache")
@@ -15,7 +12,6 @@ M.t_last_move = vim.loop.hrtime()
 M.ring_timer = nil
 M.debounce_timer = nil
 
----@class LlamaConfig
 local default_config = {
   endpoint_fim = "http://127.0.0.1:8012/infill",
   endpoint_inst = "http://127.0.0.1:8012/v1/chat/completions",
@@ -36,11 +32,10 @@ local default_config = {
   ring_chunk_size = 64,
   ring_scope = 1024,
   ring_update_ms = 1000,
-  -- llama.lua additions (not in llama.vim)
-  auto_fim_debounce_ms = 300, -- debounce delay in ms, set 0 to disable
-  server_managed = false, -- auto-start/stop llama-server
-  server_args = { "--fim-qwen-7b-default" }, -- args passed to llama-server
-  filetypes = { -- filetype -> bool|function, like copilot.lua
+  auto_fim_debounce_ms = 300,
+  server_managed = false,
+  server_args = { "--fim-qwen-7b-default" },
+  filetypes = {
     ["*"] = true,
     ["yaml"] = false,
     ["markdown"] = false,
@@ -58,17 +53,14 @@ local default_config = {
   enable_at_startup = true,
 }
 
----@type LlamaConfig
 M.config = vim.deepcopy(default_config)
 
 local augroup = vim.api.nvim_create_augroup("llama", { clear = true })
 
---- Check if completions should be active for the current buffer
 local function buf_allowed()
   local ft = vim.bo.filetype
   local ft_config = M.config.filetypes
 
-  -- check specific filetype first
   local val = ft_config[ft]
   if val ~= nil then
     if type(val) == "function" then
@@ -77,7 +69,6 @@ local function buf_allowed()
     return val
   end
 
-  -- fall back to wildcard
   val = ft_config["*"]
   if val ~= nil then
     if type(val) == "function" then
@@ -97,7 +88,6 @@ local function on_move()
     return
   end
 
-  -- defer cache lookup so it doesn't block the keystroke
   vim.schedule(function()
     local pos_x = vim.fn.col(".") - 1
     local pos_y = vim.fn.line(".")
@@ -105,7 +95,6 @@ local function on_move()
   end)
 end
 
---- Debounced version of on_move + fim request
 local function on_cursor_moved_i()
   M.t_last_move = vim.loop.hrtime()
   fim.hide(M.config)
@@ -114,7 +103,6 @@ local function on_cursor_moved_i()
     return
   end
 
-  -- Debounce: cancel previous timer and start a new one
   if M.debounce_timer then
     vim.fn.timer_stop(M.debounce_timer)
     M.debounce_timer = nil
@@ -170,7 +158,6 @@ local function setup_autocmds()
     })
   end
 
-  -- gather chunks on yank
   vim.api.nvim_create_autocmd("TextYankPost", {
     group = augroup,
     pattern = "*",
@@ -181,7 +168,6 @@ local function setup_autocmds()
     end,
   })
 
-  -- gather chunks on buffer enter/leave
   vim.api.nvim_create_autocmd("BufEnter", {
     group = augroup,
     pattern = "*",
@@ -206,7 +192,6 @@ local function setup_autocmds()
     end,
   })
 
-  -- gather chunk on save
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = augroup,
     pattern = "*",
@@ -224,7 +209,6 @@ function M.enable()
     return
   end
 
-  -- keymaps
   if M.config.keymap_fim_trigger ~= "" then
     vim.keymap.set("i", M.config.keymap_fim_trigger, function()
       if not buf_allowed() then
@@ -240,7 +224,6 @@ function M.enable()
     end, { silent = true })
   end
 
-  -- instruct keymap
   if M.config.keymap_inst_trigger ~= "" then
     vim.keymap.set("v", M.config.keymap_inst_trigger, ":LlamaInstruct<CR>", { silent = true })
   end
@@ -248,7 +231,6 @@ function M.enable()
   setup_autocmds()
   fim.hide(M.config)
 
-  -- ring buffer updates
   if M.config.ring_n_chunks > 0 then
     local function ring_tick()
       ring.update(M.config, M.t_last_move)
@@ -277,7 +259,6 @@ function M.disable()
     M.debounce_timer = nil
   end
 
-  -- remove keymaps
   if M.config.keymap_fim_trigger ~= "" then
     pcall(vim.keymap.del, "i", M.config.keymap_fim_trigger)
   end
@@ -309,16 +290,13 @@ function M.toggle_auto_fim()
   setup_autocmds()
 end
 
---- Check if FIM hint is currently shown
 function M.is_fim_hint_shown()
   return fim.hint_shown
 end
 
----@param opts LlamaConfig?
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts or {})
 
-  -- highlights
   vim.api.nvim_set_hl(0, "llama_hl_fim_hint", { fg = "#ff772f", default = true })
   vim.api.nvim_set_hl(0, "llama_hl_fim_info", { fg = "#77ff2f", default = true })
 
@@ -327,7 +305,6 @@ function M.setup(opts)
     return
   end
 
-  -- commands
   vim.api.nvim_create_user_command("LlamaEnable", function()
     M.enable()
   end, {})
@@ -350,7 +327,6 @@ function M.setup(opts)
     server.stop()
   end, {})
 
-  -- server management
   server.setup(M.config)
 
   if M.config.enable_at_startup then

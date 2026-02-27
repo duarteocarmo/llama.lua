@@ -1,4 +1,3 @@
---- FIM (Fill-in-Middle) completion engine
 local cache = require("llama.cache")
 local ring = require("llama.ring")
 local util = require("llama.util")
@@ -13,18 +12,12 @@ M.timer_fim = nil
 M.indent_last = -1
 M.pos_y_pick = -9999
 
--- generation counter: bumped on every hide/keystroke so stale async work aborts
 M._generation = 0
 
 local ns_fim = vim.api.nvim_create_namespace("llama_fim")
 local EXTMARK_HINT = 1
 local EXTMARK_LINES = 2
 
---- Get local context around cursor
----@param pos_x number 0-indexed column
----@param pos_y number 1-indexed line
----@param prev string[] optional previous completion
----@param config table
 function M.ctx_local(pos_x, pos_y, prev, config)
   local max_y = vim.fn.line("$")
 
@@ -40,7 +33,6 @@ function M.ctx_local(pos_x, pos_y, prev, config)
     lines_prefix = vim.fn.getline(math.max(1, pos_y - config.n_prefix), pos_y - 1)
     lines_suffix = vim.fn.getline(pos_y + 1, math.min(max_y, pos_y + config.n_suffix))
 
-    -- special handling of whitespace-only lines
     if line_cur:match("^%s*$") then
       indent = 0
       line_cur_prefix = ""
@@ -85,7 +77,6 @@ function M.ctx_local(pos_x, pos_y, prev, config)
   }
 end
 
---- Render the FIM suggestion as virtual text
 function M.render(pos_x, pos_y, raw, config)
   -- don't show during popup menu
   if vim.fn.pumvisible() == 1 then
@@ -139,7 +130,6 @@ function M.render(pos_x, pos_y, raw, config)
   local line_cur_prefix = line_cur:sub(1, pos_x)
   local line_cur_suffix = line_cur:sub(pos_x + 1)
 
-  -- truncation heuristics (matching llama.vim logic)
   if #content == 1 and content[1] == "" then
     content = { "" }
   end
@@ -283,7 +273,6 @@ function M.render(pos_x, pos_y, raw, config)
   }
 end
 
---- Hide the FIM suggestion
 function M.hide(config)
   M.hint_shown = false
   M._generation = M._generation + 1
@@ -310,9 +299,6 @@ function M.hide(config)
   end
 end
 
---- Try to show a hint from cache.
---- The backwards cache scan (up to 128 iterations) is chunked into batches
---- via vim.schedule so it never blocks the main thread for more than ~1ms.
 function M.try_hint(pos_x, pos_y, config)
   local mode = vim.api.nvim_get_mode().mode
   if not mode:match("^i") then
@@ -332,7 +318,6 @@ function M.try_hint(pos_x, pos_y, config)
     return
   end
 
-  -- run the backwards cache scan in batches so we don't block input
   local pm = ctx.prefix .. ctx.middle
   local suffix = ctx.suffix
   local gen = M._generation
@@ -388,7 +373,6 @@ function M.try_hint(pos_x, pos_y, config)
   scan_batch(0)
 end
 
---- Accept the current suggestion
 function M.accept(accept_type, config)
   if not M.data or not M.data.can_accept or not M.data.content or #M.data.content == 0 then
     M.hide(config)
@@ -433,7 +417,6 @@ function M.accept(accept_type, config)
   M.hide(config)
 end
 
---- FIM inline trigger (for keymap)
 function M.inline(is_auto, use_cache, config)
   if M.hint_shown and not is_auto then
     M.hide(config)
@@ -443,7 +426,6 @@ function M.inline(is_auto, use_cache, config)
   return ""
 end
 
---- Main FIM request
 function M.request(pos_x, pos_y, is_auto, prev, use_cache, config)
   if pos_x < 0 then
     pos_x = vim.fn.col(".") - 1
@@ -620,13 +602,11 @@ function M.request(pos_x, pos_y, is_auto, prev, use_cache, config)
     stdout_buffered = true,
   })
 
-  -- pipe request body via stdin (avoids huge command-line args)
   if M.current_job and M.current_job > 0 then
     vim.fn.chansend(M.current_job, request_json)
     vim.fn.chanclose(M.current_job, "stdin")
   end
 
-  -- gather extra context
   local delta_y = math.abs(pos_y - M.pos_y_pick)
   if is_auto and delta_y > 32 then
     ring.pick_chunk(

@@ -1,16 +1,14 @@
---- Instruction-based editing (gp.nvim-style inline replace)
 local debug = require("llama.debug")
 
 local M = {}
 
 M.active_job = nil
 
---- Build chat messages for instruct (gp.nvim style)
 function M.build(selection, filetype, filename, instruction)
-  local system_prompt =
+  local system =
     "You are a code editor. When given code and an instruction, output the modified code only. No explanations."
 
-  local user_content = string.format(
+  local user = string.format(
     "I have the following from %s:\n\n```%s\n%s\n```\n\n%s\n\nRespond exclusively with the snippet that should replace the selection above.",
     filename,
     filetype,
@@ -19,12 +17,11 @@ function M.build(selection, filetype, filename, instruction)
   )
 
   return {
-    { role = "system", content = system_prompt },
-    { role = "user", content = user_content },
+    { role = "system", content = system },
+    { role = "user", content = user },
   }
 end
 
---- Strip code fences from completed response, return only content inside first fence block
 function M.strip_fences(text)
   local fence_start = text:find("```[^\n]*\n")
   if not fence_start then
@@ -38,7 +35,6 @@ function M.strip_fences(text)
   return text:sub(content_start, fence_end)
 end
 
---- Stop any active instruct job
 function M.stop()
   if M.active_job then
     pcall(vim.fn.jobstop, M.active_job)
@@ -46,7 +42,6 @@ function M.stop()
   end
 end
 
---- Parse SSE streaming chunks for content deltas
 local function parse_sse(lines)
   local content = ""
   for _, line in ipairs(lines) do
@@ -71,20 +66,11 @@ local function parse_sse(lines)
   return content
 end
 
---- Undojoin helper (like gp.nvim's helpers.undojoin)
-local function undojoin(buf)
-  if vim.api.nvim_buf_is_valid(buf) then
-    pcall(vim.cmd.undojoin)
-  end
-end
-
---- Main entry: visual selection -> prompt -> delete -> stream replacement
 function M.instruct(l0, l1, config)
   M.stop()
 
   local bufnr = vim.api.nvim_get_current_buf()
   local buf_lines = vim.api.nvim_buf_line_count(bufnr)
-
   l0 = math.max(1, math.min(l0, buf_lines))
   l1 = math.max(l0, math.min(l1, buf_lines))
 
@@ -95,7 +81,7 @@ function M.instruct(l0, l1, config)
   local filetype = vim.bo[bufnr].filetype or ""
   local filename = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t") or ""
 
-  -- measure indentation to preserve it
+  -- measure min indentation
   local min_indent = nil
   local use_tabs = false
   for _, line in ipairs(lines) do
@@ -112,7 +98,6 @@ function M.instruct(l0, l1, config)
   min_indent = min_indent or 0
   local prefix = string.rep(use_tabs and "\t" or " ", min_indent)
 
-  -- prompt user for instruction
   local instruction = vim.fn.input("Instruction: ")
   if instruction == "" then
     return
@@ -120,18 +105,14 @@ function M.instruct(l0, l1, config)
 
   debug.log("instruct", "instruction: " .. instruction)
 
-  local messages = M.build(selection, filetype, filename, instruction)
-
   local request = {
-    messages = messages,
+    messages = M.build(selection, filetype, filename, instruction),
     temperature = 0.00,
     stream = true,
   }
   if config.model_inst and #config.model_inst > 0 then
     request.model = config.model_inst
   end
-
-  local request_json = vim.fn.json_encode(request)
 
   local curl_args = {
     "curl",
@@ -151,23 +132,23 @@ function M.instruct(l0, l1, config)
     table.insert(curl_args, "Authorization: Bearer " .. config.api_key)
   end
 
-  -- delete selection and insert one empty line as placeholder
+  -- delete selection, insert placeholder
   vim.api.nvim_buf_set_lines(bufnr, l0 - 1, l1, false, { "" })
   vim.api.nvim_win_set_cursor(0, { l0, 0 })
 
-  -- streaming state (gp.nvim-style)
-  local accumulated = "" -- full raw response
-  local content = "" -- content inside fences (or raw if no fences)
-  local first_line = l0 - 1 -- 0-indexed insert point
-  local finished_lines = 0 -- lines fully written (won't be touched again)
+  -- streaming state
+  local accumulated = ""
+  local content = ""
+  local first_line = l0 - 1
+  local finished_lines = 0
+  local prev_written_lines = 1
   local skip_first_undojoin = true
   local inside_fence = false
   local fence_done = false
 
-  --- extract content from accumulated, handling fence detection
   local function extract_content()
     if fence_done then
-      debug.log("inst_extract", "fence_done, returning cached content (" .. #content .. " chars)")
+      debug.log("inst_extract", "fence_done (" .. #content .. " chars)")
       return content
     end
 
@@ -177,52 +158,39 @@ function M.instruct(l0, l1, config)
         inside_fence = true
         local after = accumulated:find("\n", fence_start) + 1
         content = accumulated:sub(after)
-        debug.log("inst_extract", "fence opened at pos " .. fence_start .. ", content so far: " .. #content .. " chars")
+        debug.log("inst_extract", "fence opened at " .. fence_start)
       else
-        -- no fence yet — if we see a full line without fence markers, treat as raw
         if accumulated:find("\n") and not accumulated:match("^%s*```") then
           content = accumulated
-          debug.log("inst_extract", "no fence, treating as raw (" .. #content .. " chars)")
+          debug.log("inst_extract", "no fence, raw mode")
         else
-          debug.log("inst_extract", "waiting for fence, accumulated: " .. vim.inspect(accumulated:sub(1, 80)))
-          return nil -- wait for more data
+          debug.log("inst_extract", "waiting for fence")
+          return nil
         end
       end
     else
-      -- inside fence, update content from after the opening fence
       local fence_start = accumulated:find("```[^\n]*\n")
       local after = accumulated:find("\n", fence_start) + 1
       content = accumulated:sub(after)
-      debug.log("inst_extract", "inside fence, content: " .. #content .. " chars")
+      debug.log("inst_extract", "inside fence (" .. #content .. " chars)")
     end
 
-    -- check for closing fence
     local close = content:find("\n```")
     if close then
       content = content:sub(1, close)
       fence_done = true
-      debug.log("inst_extract", "fence closed! final content: " .. #content .. " chars")
+      debug.log("inst_extract", "fence closed (" .. #content .. " chars)")
     end
 
     return content
   end
 
-  --- write content to buffer (gp.nvim style: only update unfinished lines)
-  local prev_written_lines = 1 -- we start with 1 placeholder line
-
-  --- write content to buffer (gp.nvim style: only update unfinished lines)
   local function write_to_buffer()
     local text = extract_content()
     if not text then
-      debug.log("inst_write", "no content yet, skipping")
       return
     end
 
-    if not vim.api.nvim_buf_is_valid(bufnr) then
-      return
-    end
-
-    -- split content into lines and add prefix
     local result_lines = vim.split(text, "\n", { plain = true })
     for i, line in ipairs(result_lines) do
       if line ~= "" and not line:match("^" .. prefix) then
@@ -232,40 +200,25 @@ function M.instruct(l0, l1, config)
 
     debug.log(
       "inst_write",
-      string.format(
-        "finished=%d prev_written=%d new_total=%d del=[%d,%d) ins_at=%d ins_count=%d",
-        finished_lines,
-        prev_written_lines,
-        #result_lines,
-        first_line + finished_lines,
-        first_line + prev_written_lines,
-        first_line + finished_lines,
-        #result_lines - finished_lines
-      )
+      string.format("finished=%d prev=%d total=%d", finished_lines, prev_written_lines, #result_lines)
     )
 
     if skip_first_undojoin then
       skip_first_undojoin = false
     else
-      undojoin(bufnr)
+      pcall(vim.cmd.undojoin)
     end
 
-    -- delete everything from finished_lines onward (the unfinished part + placeholder)
     vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + prev_written_lines, false, {})
+    pcall(vim.cmd.undojoin)
 
-    undojoin(bufnr)
-
-    -- insert unfinished lines (from finished_lines onward)
     local unfinished = {}
     for i = finished_lines + 1, #result_lines do
       table.insert(unfinished, result_lines[i])
     end
-
     vim.api.nvim_buf_set_lines(bufnr, first_line + finished_lines, first_line + finished_lines, false, unfinished)
 
-    -- update tracking
     prev_written_lines = #result_lines
-    -- all lines except the last are "finished" (last may still receive more chars)
     finished_lines = math.max(0, #result_lines - 1)
   end
 
@@ -287,35 +240,24 @@ function M.instruct(l0, l1, config)
           return
         end
 
-        if not vim.api.nvim_buf_is_valid(bufnr) then
-          return
-        end
-
-        -- final write to flush any remaining content
         local text = extract_content()
         if not text or #text == 0 then
           text = accumulated
         end
 
         local result_lines = vim.split(text, "\n", { plain = true })
-
-        -- remove trailing empty lines
         while #result_lines > 0 and result_lines[#result_lines] == "" do
           result_lines[#result_lines] = nil
         end
-
-        -- add prefix
         for i, line in ipairs(result_lines) do
           if line ~= "" and not line:match("^" .. prefix) then
             result_lines[i] = prefix .. line
           end
         end
 
-        -- final replace of everything we've written
-        undojoin(bufnr)
-        local written_end = first_line + math.max(finished_lines + 1, 1)
-        local buf_total = vim.api.nvim_buf_line_count(bufnr)
-        written_end = math.min(written_end, buf_total)
+        pcall(vim.cmd.undojoin)
+        local written_end = first_line + math.max(prev_written_lines, 1)
+        written_end = math.min(written_end, vim.api.nvim_buf_line_count(bufnr))
         vim.api.nvim_buf_set_lines(bufnr, first_line, written_end, false, result_lines)
 
         debug.log("instruct", "done")
@@ -325,11 +267,9 @@ function M.instruct(l0, l1, config)
   })
 
   if M.active_job and M.active_job > 0 then
-    vim.fn.chansend(M.active_job, request_json)
+    vim.fn.chansend(M.active_job, vim.fn.json_encode(request))
     vim.fn.chanclose(M.active_job, "stdin")
-    debug.log("instruct", "request sent to " .. config.endpoint_inst)
-  else
-    vim.notify("llama.lua: failed to start instruct request", vim.log.levels.ERROR)
+    debug.log("instruct", "sent to " .. config.endpoint_inst)
   end
 end
 

@@ -1,18 +1,12 @@
---- Ring buffer for extra context chunks
 local util = require("llama.util")
 local debug = require("llama.debug")
 
 local M = {}
 
-M.chunks = {} -- current chunks used as extra context
-M.queued = {} -- chunks queued to be sent
+M.chunks = {}
+M.queued = {}
 M.n_evict = 0
 
---- Pick a chunk from text and queue it
----@param text string[] lines
----@param no_mod boolean skip modified/non-file buffers
----@param do_evict boolean evict similar chunks
----@param config table
 function M.pick_chunk(text, no_mod, do_evict, config)
   if no_mod then
     local bufnr = vim.api.nvim_get_current_buf()
@@ -40,7 +34,6 @@ function M.pick_chunk(text, no_mod, do_evict, config)
 
   local chunk_str = table.concat(chunk, "\n") .. "\n"
 
-  -- check duplicates
   for _, c in ipairs(M.chunks) do
     if vim.deep_equal(c.data, chunk) then
       return
@@ -52,7 +45,6 @@ function M.pick_chunk(text, no_mod, do_evict, config)
     end
   end
 
-  -- evict similar from queued
   for i = #M.queued, 1, -1 do
     if util.chunk_sim(M.queued[i].data, chunk) > 0.9 then
       if do_evict then
@@ -64,7 +56,6 @@ function M.pick_chunk(text, no_mod, do_evict, config)
     end
   end
 
-  -- evict similar from chunks
   for i = #M.chunks, 1, -1 do
     if util.chunk_sim(M.chunks[i].data, chunk) > 0.9 then
       if do_evict then
@@ -88,7 +79,6 @@ function M.pick_chunk(text, no_mod, do_evict, config)
   })
 end
 
---- Get extra context for FIM requests
 function M.get_extra()
   local extra = {}
   for _, chunk in ipairs(M.chunks) do
@@ -101,9 +91,7 @@ function M.get_extra()
   return extra
 end
 
---- Process queued chunks - called periodically
 function M.update(config, t_last_move)
-  -- only update in normal mode or if cursor hasn't moved for a while
   local mode = vim.api.nvim_get_mode().mode
   if mode ~= "n" then
     local elapsed = (vim.loop.hrtime() - t_last_move) / 1e9
@@ -116,16 +104,13 @@ function M.update(config, t_last_move)
     return
   end
 
-  -- move first queued to ring
   if #M.chunks >= config.ring_n_chunks then
     table.remove(M.chunks, 1)
   end
 
   table.insert(M.chunks, table.remove(M.queued, 1))
 
-  -- send async warmup request with new extra context
   local extra = M.get_extra()
-
   local request = {
     id_slot = 0,
     input_prefix = "",

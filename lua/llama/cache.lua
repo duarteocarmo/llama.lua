@@ -1,4 +1,3 @@
---- LRU cache for FIM completions
 local M = {}
 
 M.data = {}
@@ -13,7 +12,6 @@ function M.insert(key, value, max_keys)
 
   M.data[key] = value
 
-  -- Remove existing and re-add at end
   for i = #M.lru_order, 1, -1 do
     if M.lru_order[i] == key then
       table.remove(M.lru_order, i)
@@ -28,7 +26,6 @@ function M.get(key)
     return nil
   end
 
-  -- Update LRU order
   for i = #M.lru_order, 1, -1 do
     if M.lru_order[i] == key then
       table.remove(M.lru_order, i)

@@ -1,6 +1,5 @@
 local M = {}
 
---- Get number of leading whitespace columns
 function M.get_indent(str)
   local count = 0
   for i = 1, #str do
@@ -16,12 +15,10 @@ function M.get_indent(str)
   return count
 end
 
---- Random integer in [i0, i1]
 function M.rand(i0, i1)
   return i0 + math.random(0, i1 - i0)
 end
 
---- Compute Jaccard-like similarity between two chunks (lists of lines)
 function M.chunk_sim(c0, c1)
   local text0 = table.concat(c0, "\n")
   local text1 = table.concat(c1, "\n")
@@ -48,7 +45,6 @@ function M.chunk_sim(c0, c1)
   return 2.0 * common / (#tokens0 + #tokens1)
 end
 
---- SHA256 hash of a string
 function M.sha256(str)
   return vim.fn.sha256(str)
 end

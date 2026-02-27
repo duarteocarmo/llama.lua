@@ -18,7 +18,6 @@ function M.log(msg, detail)
 
   if M.log_buf and vim.api.nvim_buf_is_valid(M.log_buf) then
     vim.api.nvim_buf_set_lines(M.log_buf, -1, -1, false, { entry })
-    -- scroll to bottom if window is visible
     if M.log_win and vim.api.nvim_win_is_valid(M.log_win) then
       local line_count = vim.api.nvim_buf_line_count(M.log_buf)
       vim.api.nvim_win_set_cursor(M.log_win, { line_count, 0 })
@@ -41,7 +40,6 @@ function M.toggle()
     vim.api.nvim_buf_set_name(M.log_buf, "llama-debug")
     vim.bo[M.log_buf].buftype = "nofile"
     vim.bo[M.log_buf].swapfile = false
-    -- Populate with existing entries
     if #M.entries > 0 then
       vim.api.nvim_buf_set_lines(M.log_buf, 0, -1, false, M.entries)
     end
@@ -50,7 +48,7 @@ function M.toggle()
   vim.cmd("vsplit")
   M.log_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(M.log_win, M.log_buf)
-  vim.cmd("wincmd p") -- go back to previous window
+  vim.cmd("wincmd p")
 end
 
 function M.clear()
